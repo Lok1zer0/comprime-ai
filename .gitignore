@@ -1,0 +1,12 @@
+# Binário do gifsicle, baixado sob demanda (GPL — não redistribuído aqui)
+bin/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Saídas de teste
+*_comprimido*.gif
