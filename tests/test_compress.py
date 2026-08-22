@@ -9,7 +9,6 @@ from gifc.probe import GifInfo
 from gifc.tools import Tools
 
 TODOS = Toggles(True, True, True, True)
-FAKE_TOOLS = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", gifsicle="gifsicle")
 
 
 def _preparar(tmp_path, monkeypatch, gifsicle="gifsicle"):
@@ -72,6 +71,16 @@ def test_degrau_que_falha_e_pulado(tmp_path, monkeypatch):
 def test_todos_os_degraus_falhando_levanta_erro(tmp_path, monkeypatch):
     mod, src, info, tools = _preparar(tmp_path, monkeypatch)
 
+    caminhos_criados: list[Path] = []
+    mkdtemp_original = mod.tempfile.mkdtemp
+
+    def mkdtemp_espiao(*args, **kwargs):
+        caminho = mkdtemp_original(*args, **kwargs)
+        caminhos_criados.append(Path(caminho))
+        return caminho
+
+    monkeypatch.setattr(mod.tempfile, "mkdtemp", mkdtemp_espiao)
+
     def sempre_falha(s, d, params, i, t):
         raise EncodeError("quebrado")
 
@@ -79,6 +88,56 @@ def test_todos_os_degraus_falhando_levanta_erro(tmp_path, monkeypatch):
 
     with pytest.raises(mod.CompressError):
         mod.compress_file(src, 1_000, TODOS, tools)
+
+    assert caminhos_criados, "mkdtemp nunca foi chamado"
+    assert not caminhos_criados[0].exists(), (
+        "o tmpdir deveria ter sido removido no finally após o CompressError"
+    )
+
+
+def test_ja_otimizado_copia_o_original(tmp_path, monkeypatch):
+    """Um GIF que cresceria ao ser recodificado não é penalizado: o
+    original é copiado como está, em vez do resultado maior."""
+    mod, src, info, tools = _preparar(tmp_path, monkeypatch)
+
+    def encode_maior(s, d, params, i, t):
+        d.write_bytes(b"GIF89a" + b"z" * (info.size_bytes + 500))
+        return d.stat().st_size
+
+    monkeypatch.setattr(mod, "encode", encode_maior)
+
+    r = mod.compress_file(src, 10_000, TODOS, tools)
+
+    assert r.already_optimized is True
+    assert r.params is None
+    assert r.dst.read_bytes() == src.read_bytes()
+    assert r.final_bytes == r.original_bytes
+
+
+@pytest.mark.parametrize(
+    "target_bytes, esperado",
+    [
+        (10_000, True),  # o original cabe no alvo
+        (100, False),  # o original não cabe no alvo
+    ],
+)
+def test_ja_otimizado_hit_target_usa_o_tamanho_original(
+    tmp_path, monkeypatch, target_bytes, esperado
+):
+    """O recálculo de hit_target no ramo já-otimizado usa o tamanho do
+    ORIGINAL copiado, não o da tentativa maior que foi descartada."""
+    mod, src, info, tools = _preparar(tmp_path, monkeypatch)
+
+    def encode_maior(s, d, params, i, t):
+        d.write_bytes(b"GIF89a" + b"z" * (info.size_bytes + 500))
+        return d.stat().st_size
+
+    monkeypatch.setattr(mod, "encode", encode_maior)
+
+    r = mod.compress_file(src, target_bytes, TODOS, tools)
+
+    assert r.already_optimized is True
+    assert r.hit_target is esperado
 
 
 def test_sem_gifsicle_descarta_a_coluna_lossy(tmp_path, monkeypatch):
