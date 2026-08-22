@@ -22,10 +22,29 @@ de 20, e o resultado é sempre a maior qualidade que atende ao alvo.
 Quatro alavancas, cada uma ligável ou desligável na interface: paleta de
 cores, compressão lossy, resolução e framerate.
 
-## Estado
+## Uso
 
-Em desenvolvimento. O design completo está em
-[`docs/superpowers/specs/`](docs/superpowers/specs/2026-08-21-gif-compressor-design.md).
+```bash
+python -m pip install -r requirements.txt
+python main.py
+```
+
+Arraste GIFs para a janela, defina o tamanho-alvo em MB e aguarde. Os
+arquivos comprimidos aparecem ao lado dos originais, com o sufixo
+`_comprimido`. Os originais nunca são modificados.
+
+No primeiro uso o app oferece baixar o `gifsicle` (~225 KB) para `bin/`.
+Nada é instalado no sistema.
+
+## Desenvolvimento
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -v
+```
+
+Os testes marcados como `integration` executam ffmpeg e gifsicle de
+verdade; rode só os unitários com `-m "not integration"`.
 
 ## Requisitos
 
