@@ -27,6 +27,9 @@ def build_filter(info: GifInfo, params: Params) -> str:
     - `dither=bayer` em vez de floyd-steinberg. Floyd gera ruído diferente
       a cada frame, o que destrói a compressão inter-frame do GIF e infla o
       arquivo. Bayer gera um padrão estático, que comprime muito melhor.
+    - `bayer_scale=5` alarga o padrão de dithering em relação ao padrão do
+      ffmpeg (2), o que comprime melhor ainda — é uma escolha deliberada,
+      não decoração incidental.
     """
     pre: list[str] = []
     if params.fps is not None and params.fps < info.fps:
@@ -42,7 +45,7 @@ def build_filter(info: GifInfo, params: Params) -> str:
     return (
         f"{prefixo}split[a][b];"
         f"[a]palettegen=max_colors={params.colors}:stats_mode=diff[p];"
-        f"[b][p]paletteuse=dither=bayer:diff_mode=rectangle"
+        f"[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
     )
 
 

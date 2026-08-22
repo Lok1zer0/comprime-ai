@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -42,7 +43,24 @@ def test_filtro_respeita_o_numero_de_cores():
 
 def test_filtro_omite_escala_quando_100():
     f = build_filter(info(), Params(256, 0, 100, None))
-    assert "scale=" not in f
+    # Ancorado a "início da string ou depois de vírgula" para checar que
+    # nenhum filtro de vídeo `scale=` está presente, sem colidir com
+    # `bayer_scale=` (que é sempre parte do dither, independente da escala,
+    # e também termina em "scale="). Um `"scale=" not in f` ingênuo
+    # combinaria com `bayer_scale=` e apagaria silenciosamente o
+    # `bayer_scale=5` deliberado do filtro — não simplifique de volta para
+    # substring.
+    assert re.search(r"(^|,)scale=", f) is None
+    assert "lanczos" not in f
+
+
+def test_filtro_usa_bayer_scale_5():
+    """bayer_scale=5 é uma escolha deliberada de compressão: alarga o
+    padrão de dithering em relação ao padrão do ffmpeg (2), o que comprime
+    melhor. Não é decoração incidental — não remova sem medir o impacto.
+    """
+    f = build_filter(info(), Params(256, 0, 100, None))
+    assert "bayer_scale=5" in f
 
 
 def test_filtro_inclui_escala_quando_reduzida():
