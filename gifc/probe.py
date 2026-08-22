@@ -26,13 +26,27 @@ class GifInfo:
     size_bytes: int
 
 
-def _parse_fps(valor: str) -> float:
-    """Converte '25/1' ou '0/0' num float utilizável."""
+FPS_PADRAO = 10.0
+"""Convenção usual de navegadores para GIFs com atraso zero entre quadros
+(avg_frame_rate '0/0' ou similar). É um valor de reserva, não um dado
+medido a partir do arquivo."""
+
+
+def _parse_fps(valor: str) -> tuple[float, bool]:
+    """Converte '25/1' num float utilizável.
+
+    Devolve `(fps, medido)`: `medido` é True quando o valor veio de fato
+    do arquivo, e False quando não foi possível interpretá-lo ou ele não
+    é positivo (ex.: '0/0'), caso em que `fps` é FPS_PADRAO — uma
+    convenção, não uma medição.
+    """
     try:
         f = float(Fraction(valor))
     except (ValueError, ZeroDivisionError):
-        return 10.0
-    return f if f > 0 else 10.0
+        return FPS_PADRAO, False
+    if f > 0:
+        return f, True
+    return FPS_PADRAO, False
 
 
 def probe(path: Path, tools: Tools) -> GifInfo:
@@ -69,12 +83,12 @@ def probe(path: Path, tools: Tools) -> GifInfo:
     if "gif" not in formato:
         raise ProbeError(f"{path.name} não é um GIF (formato: {formato}).")
 
-    fps = _parse_fps(stream.get("avg_frame_rate", "0/0"))
+    fps, fps_medido = _parse_fps(stream.get("avg_frame_rate", "0/0"))
     frame_count = int(stream.get("nb_read_frames") or 0)
     duracao = float(
         stream.get("duration") or dados.get("format", {}).get("duration") or 0.0
     )
-    if duracao <= 0 and frame_count and fps:
+    if duracao <= 0 and frame_count and fps_medido:
         duracao = frame_count / fps
 
     return GifInfo(
