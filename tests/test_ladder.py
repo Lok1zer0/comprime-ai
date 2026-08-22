@@ -29,19 +29,35 @@ def test_escada_base_termina_no_mais_agressivo():
     assert ultimo.colors == 32
     assert ultimo.lossy == 200
     assert ultimo.scale_pct == 50
+    assert ultimo.fps == 10.0
 
 
 def test_agressividade_nao_diminui_ao_longo_da_escada():
-    """Nenhum degrau é melhor que o anterior em todas as dimensões."""
-    for anterior, atual in zip(BASE_LADDER, BASE_LADDER[1:]):
-        melhor_em_tudo = (
-            atual.colors >= anterior.colors
-            and atual.lossy <= anterior.lossy
-            and atual.scale_pct >= anterior.scale_pct
-            and (atual.fps is None or (anterior.fps is not None
-                                       and atual.fps >= anterior.fps))
+    """Cada degrau é fracamente mais agressivo em TODAS as dimensões.
+
+    Isto é necessário para que o tamanho codificado seja monotonicamente
+    não-crescente, garantindo que a busca binária de lower bound é válida.
+    """
+    for i, (anterior, atual) in enumerate(zip(BASE_LADDER, BASE_LADDER[1:])):
+        assert atual.colors <= anterior.colors, (
+            f"Rung {i} -> {i+1}: colors aumentou ({anterior.colors} -> {atual.colors})"
         )
-        assert not melhor_em_tudo, f"{atual} não é mais agressivo que {anterior}"
+        assert atual.lossy >= anterior.lossy, (
+            f"Rung {i} -> {i+1}: lossy diminui ({anterior.lossy} -> {atual.lossy})"
+        )
+        assert atual.scale_pct <= anterior.scale_pct, (
+            f"Rung {i} -> {i+1}: scale_pct aumentou ({anterior.scale_pct} -> {atual.scale_pct})"
+        )
+        # fps: None é o maior (original), números são menores
+        if anterior.fps is None:
+            # Anterior tem fps original, atual pode ter qualquer coisa
+            pass
+        else:
+            # Anterior tem fps específico, atual deve ter fps <= anterior.fps
+            if atual.fps is not None:
+                assert atual.fps <= anterior.fps, (
+                    f"Rung {i} -> {i+1}: fps aumentou ({anterior.fps} -> {atual.fps})"
+                )
 
 
 def test_params_e_hashavel():

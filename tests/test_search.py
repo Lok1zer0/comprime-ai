@@ -49,7 +49,13 @@ def test_nenhum_degrau_valido_devolve_o_menor_absoluto():
     assert r.index == 9
 
 
-def test_curva_nao_monotonica_nao_piora_o_resultado():
+def test_melhor_absoluto_protege_contra_curva_nao_monotonica():
+    """Mesmo com curva não-monotônica, melhor_absoluto garante bom resultado.
+
+    O índice 4 sai fora da curva (95 bytes), maior que seus vizinhos.
+    A busca pode não encontrá-lo, mas melhor_absoluto rastreia o menor
+    tamanho visto, garantindo que o resultado não piora.
+    """
     # o índice 4 sai fora da curva, maior que seus vizinhos
     tamanhos = [100, 90, 80, 70, 95, 50, 40, 30, 20, 10]
     r = find_best(escada(10), 75, encoder(tamanhos))
@@ -57,7 +63,12 @@ def test_curva_nao_monotonica_nao_piora_o_resultado():
     assert r.hit_target is True
 
 
-def test_memoiza_cada_indice_no_maximo_uma_vez():
+def test_nenhum_indice_e_codificado_duas_vezes():
+    """A forma da busca binária nunca revisita um índice.
+
+    Cada probe semanal invalida metade do intervalo restante, garantindo
+    que o mesmo índice nunca é sondado novamente.
+    """
     tamanhos = [100 - i * 10 for i in range(10)]
     registro: list[int] = []
     find_best(escada(10), 55, encoder(tamanhos, registro))
@@ -97,3 +108,19 @@ def test_attempts_registra_todas_as_tentativas():
     r = find_best(escada(10), 55, encoder(tamanhos))
     assert len(r.attempts) >= 1
     assert all(a.size_bytes == tamanhos[a.index] for a in r.attempts)
+
+
+@pytest.mark.xfail(reason="A busca binária é correta apenas em curvas monótonas. BASE_LADDER garante monotonidade por construção, mas curvas sintéticas não-monótonas estão fora do contrato da função.")
+def test_regressao_curva_nao_monotonica_encontra_menor_valido():
+    """Demonstra que a bisecção falha em curva não-monotônica.
+
+    Com tamanhos [100, 90, 80, 70, 95, 50, 40, 30, 20, 10] e alvo 75,
+    o verdadeiro menor índice válido é 3 (tamanho 70).
+    Mas a bisecção pode falhar porque uma sonda descarta incorretamente
+    todos os índices menores quando encontra o outlier no índice 4.
+
+    Este teste documenta que find_best depende da monotonidade da escada.
+    """
+    tamanhos = [100, 90, 80, 70, 95, 50, 40, 30, 20, 10]
+    r = find_best(escada(10), 75, encoder(tamanhos))
+    assert r.index == 3  # O verdadeiro melhor, não um fallback

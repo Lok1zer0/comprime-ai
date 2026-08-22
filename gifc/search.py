@@ -44,8 +44,13 @@ def find_best(
 ) -> SearchResult:
     """Acha o degrau de MAIOR qualidade cujo resultado cabe no alvo.
 
-    Como o tamanho decresce ao longo da escada, isto é uma busca de lower
+    A escada garante que cada degrau é fracamente mais agressivo que o
+    anterior em todas as dimensões, o que torna o tamanho codificado
+    monotonicamente não-crescente. Isto permite usar uma busca de lower
     bound: ~log2(n) codificações em vez de n.
+
+    O registro de `menor_absoluto` continua necessário para proteger contra
+    variações do encoder que possam produzir um arquivo localmente maior.
 
     Se nenhum degrau couber, devolve o de menor tamanho encontrado, com
     `hit_target=False`.
@@ -54,7 +59,6 @@ def find_best(
         raise ValueError("A escada de qualidade está vazia.")
 
     total = len(ladder)
-    cache: dict[int, int] = {}
     attempts: list[Attempt] = []
 
     melhor_valido: Attempt | None = None
@@ -68,15 +72,11 @@ def find_best(
         mid = (lo + hi) // 2
         params = ladder[mid]
 
-        if mid in cache:
-            tamanho = cache[mid]
-        else:
-            tamanho = encode_fn(mid, params)
-            cache[mid] = tamanho
-            tentativa = Attempt(index=mid, params=params, size_bytes=tamanho)
-            attempts.append(tentativa)
-            if on_progress is not None:
-                on_progress(tentativa, total)
+        tamanho = encode_fn(mid, params)
+        tentativa = Attempt(index=mid, params=params, size_bytes=tamanho)
+        attempts.append(tentativa)
+        if on_progress is not None:
+            on_progress(tentativa, total)
 
         atual = Attempt(index=mid, params=params, size_bytes=tamanho)
 

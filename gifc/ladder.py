@@ -35,9 +35,11 @@ class Toggles:
     fps: bool = True
 
 
-# Ordenada por custo visual crescente: paleta e lossy primeiro (quase
-# invisíveis), resolução depois, framerate por último — perda de fluidez é
-# o que mais salta aos olhos.
+# Cada degrau é fracamente mais agressivo que o anterior em todas as
+# dimensões simultaneamente: cores nunca aumentam, lossy nunca diminui,
+# escala nunca aumenta, fps nunca aumenta (None é o maior fps).
+# Isto garante que o tamanho codificado é monotonicamente não-crescente
+# ao longo da escada, o que torna a busca binária de lower bound válida.
 BASE_LADDER: tuple[Params, ...] = (
     Params(256, 0, 100, None),      # 0
     Params(256, 20, 100, None),     # 1
@@ -48,16 +50,16 @@ BASE_LADDER: tuple[Params, ...] = (
     Params(64, 60, 100, None),      # 6
     Params(64, 80, 100, None),      # 7
     Params(64, 100, 100, None),     # 8
-    Params(64, 80, 85, None),       # 9
-    Params(64, 100, 85, None),      # 10
-    Params(64, 80, 70, None),       # 11
-    Params(64, 100, 70, None),      # 12
-    Params(64, 80, 70, 20.0),       # 13
-    Params(64, 100, 70, 15.0),      # 14
-    Params(64, 100, 70, 12.0),      # 15
-    Params(32, 100, 70, 15.0),      # 16
-    Params(32, 140, 70, 12.0),      # 17
-    Params(32, 140, 50, 12.0),      # 18
+    Params(64, 100, 85, None),      # 9
+    Params(64, 120, 85, None),      # 10
+    Params(64, 120, 70, None),      # 11
+    Params(64, 140, 70, None),      # 12
+    Params(64, 140, 70, 20.0),      # 13
+    Params(64, 140, 70, 15.0),      # 14
+    Params(64, 140, 70, 12.0),      # 15
+    Params(32, 140, 70, 12.0),      # 16
+    Params(32, 160, 70, 12.0),      # 17
+    Params(32, 160, 50, 12.0),      # 18
     Params(32, 200, 50, 10.0),      # 19
 )
 
