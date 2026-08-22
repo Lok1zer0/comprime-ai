@@ -140,6 +140,61 @@ def test_ja_otimizado_hit_target_usa_o_tamanho_original(
     assert r.hit_target is esperado
 
 
+def test_ja_otimizado_hit_target_discrimina_original_de_tentativa(tmp_path, monkeypatch):
+    """Caso que de fato distingue as duas fórmulas possíveis de hit_target.
+
+    Os dois casos parametrizados acima (10_000 e 100) não discriminam nada:
+    tanto o tamanho do original quanto o da tentativa descartada dão a
+    mesma resposta para esses alvos, porque ambos estão muito longe dos
+    dois valores. Um mutante que trocasse `info.size_bytes` por
+    `resultado.size_bytes` no recálculo de hit_target passaria despercebido
+    por eles.
+
+    A única janela onde as fórmulas discordam é um alvo estritamente entre
+    o tamanho do original e o da tentativa: `original < alvo < tentativa`.
+    Nessa janela, "cabe no original" é True e "cabe na tentativa" é False.
+    Os valores são derivados de `info.size_bytes`, não fixos, para que a
+    relação continue válida se o fixture de `_preparar` mudar de tamanho.
+    """
+    mod, src, info, tools = _preparar(tmp_path, monkeypatch)
+
+    delta_tentativa = 500
+    tentativa_tamanho = info.size_bytes + delta_tentativa
+    alvo = info.size_bytes + delta_tentativa // 2
+    assert info.size_bytes < alvo < tentativa_tamanho
+
+    def encode_maior(s, d, params, i, t):
+        d.write_bytes(b"GIF89a" + b"z" * (tentativa_tamanho - 6))
+        assert d.stat().st_size == tentativa_tamanho
+        return d.stat().st_size
+
+    monkeypatch.setattr(mod, "encode", encode_maior)
+
+    r = mod.compress_file(src, alvo, TODOS, tools)
+
+    assert r.already_optimized is True
+    # Só é True se hit_target foi calculado contra o tamanho do ORIGINAL.
+    assert r.hit_target is True
+
+
+def test_ja_otimizado_dispara_em_empate_exato(tmp_path, monkeypatch):
+    """`>=`, não `>`: uma tentativa do MESMO tamanho do original também
+    conta como "já otimizado" — não há ganho real em substituí-lo por um
+    arquivo idêntico em tamanho."""
+    mod, src, info, tools = _preparar(tmp_path, monkeypatch)
+
+    def encode_igual(s, d, params, i, t):
+        d.write_bytes(src.read_bytes())
+        assert d.stat().st_size == info.size_bytes
+        return d.stat().st_size
+
+    monkeypatch.setattr(mod, "encode", encode_igual)
+
+    r = mod.compress_file(src, 10_000, TODOS, tools)
+
+    assert r.already_optimized is True
+
+
 def test_sem_gifsicle_descarta_a_coluna_lossy(tmp_path, monkeypatch):
     """Modo degradado: manter lossy só geraria degraus idênticos."""
     mod, src, info, tools = _preparar(tmp_path, monkeypatch, gifsicle=None)
