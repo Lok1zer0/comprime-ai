@@ -66,7 +66,7 @@ def test_melhor_absoluto_protege_contra_curva_nao_monotonica():
 def test_nenhum_indice_e_codificado_duas_vezes():
     """A forma da busca binária nunca revisita um índice.
 
-    Cada probe semanal invalida metade do intervalo restante, garantindo
+    Cada sondagem invalida metade do intervalo restante, garantindo
     que o mesmo índice nunca é sondado novamente.
     """
     tamanhos = [100 - i * 10 for i in range(10)]

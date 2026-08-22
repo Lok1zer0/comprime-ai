@@ -53,10 +53,15 @@ def test_agressividade_nao_diminui_ao_longo_da_escada():
             # Anterior tem fps original, atual pode ter qualquer coisa
             pass
         else:
-            # Anterior tem fps específico, atual deve ter fps <= anterior.fps
+            # Anterior tem fps específico, atual deve ter fps <= anterior.fps ou None não é permitido
             if atual.fps is not None:
                 assert atual.fps <= anterior.fps, (
                     f"Rung {i} -> {i+1}: fps aumentou ({anterior.fps} -> {atual.fps})"
+                )
+            else:
+                # atual.fps is None, que significa source fps (None > qualquer número)
+                assert False, (
+                    f"Rung {i} -> {i+1}: fps aumentou ({anterior.fps} -> None)"
                 )
 
 
