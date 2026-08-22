@@ -75,9 +75,13 @@ Três escolhas carregam a maior parte do ganho:
 `fps` é omitido do filtro quando o alvo é igual ao original. `scale` é
 omitido quando a escala é 100%. Nunca faz upscale nem aumenta framerate.
 
-A largura alvo é `round(largura_original × escala / 2) × 2` — arredondada
-para par, com mínimo de 16px. A altura é `-1` (proporcional). Isso evita
+A largura alvo é `int(largura_original × escala)`, elevada ao próximo par se
+for ímpar, com mínimo de 16px. A altura é `-1` (proporcional). Isso evita
 larguras degeneradas em GIFs muito pequenos e mantém o resultado previsível.
+
+> A primeira versão desta spec dizia `round(.../2) × 2`, o que contradizia os
+> próprios casos de teste: o `round` do Python arredonda para o par mais
+> próximo, então 33 daria 32 e não 34. A fórmula acima é a que está no código.
 
 ### Estágio 2 — gifsicle
 
@@ -107,21 +111,33 @@ ordenada do sacrifício menos perceptível ao mais agressivo**:
 | 6 | 64 | 60 | 100% | orig |
 | 7 | 64 | 80 | 100% | orig |
 | 8 | 64 | 100 | 100% | orig |
-| 9 | 64 | 80 | 85% | orig |
-| 10 | 64 | 100 | 85% | orig |
-| 11 | 64 | 80 | 70% | orig |
-| 12 | 64 | 100 | 70% | orig |
-| 13 | 64 | 80 | 70% | 20 |
-| 14 | 64 | 100 | 70% | 15 |
-| 15 | 64 | 100 | 70% | 12 |
-| 16 | 32 | 100 | 70% | 15 |
-| 17 | 32 | 140 | 70% | 12 |
-| 18 | 32 | 140 | 50% | 12 |
+| 9 | 64 | 100 | 85% | orig |
+| 10 | 64 | 120 | 85% | orig |
+| 11 | 64 | 120 | 70% | orig |
+| 12 | 64 | 140 | 70% | orig |
+| 13 | 64 | 140 | 70% | 20 |
+| 14 | 64 | 140 | 70% | 15 |
+| 15 | 64 | 140 | 70% | 12 |
+| 16 | 32 | 140 | 70% | 12 |
+| 17 | 32 | 160 | 70% | 12 |
+| 18 | 32 | 160 | 50% | 12 |
 | 19 | 32 | 200 | 50% | 10 |
 
 A ordem reflete o custo visual: paleta e lossy primeiro (quase invisíveis),
 resolução depois, framerate por último — porque perda de fluidez é o que
 mais salta aos olhos.
+
+**Invariante de monotonicidade.** Cada degrau é fracamente mais agressivo que
+o anterior em *todas* as quatro dimensões ao mesmo tempo: as cores nunca
+sobem, o lossy nunca desce, a escala nunca sobe e o fps nunca sobe (`orig`
+conta como o mais alto). Isso não é estética — é o que garante que o tamanho
+codificado seja monotonicamente não-crescente, e é essa garantia que torna a
+busca binária correta. Uma escada que troca uma dimensão por outra (por
+exemplo, menos cores mas mais fps) pode produzir um arquivo *maior* num
+degrau seguinte, e nesse caso a bisecção pode descartar uma região inteira
+que continha um resultado de qualidade melhor. Um teste trava essa invariante
+degrau a degrau; se você editar a tabela, ele falha antes que o defeito
+chegue à busca.
 
 ### Efeito dos toggles
 
@@ -149,8 +165,10 @@ GIF de entrada já é de baixo framerate.
 Objetivo: encontrar o **menor índice** da escada cujo resultado caiba no
 alvo — ou seja, a maior qualidade que atende ao limite de tamanho.
 
-Como o tamanho decresce ao longo da escada, isso é uma busca binária de
-lower bound, com ~5 encodes em vez de 20:
+Pela invariante de monotonicidade da escada, o tamanho é não-crescente ao
+longo dela, então isso é uma busca binária de lower bound: ~5 encodes em vez
+de 20. A bisecção só é correta *por causa* dessa invariante — ver a seção
+anterior.
 
 ```
 lo, hi = 0, n-1
@@ -159,7 +177,7 @@ menor_absoluto = None    # menor TAMANHO visto, cabendo ou não
 
 enquanto lo <= hi:
     mid = (lo + hi) // 2
-    tamanho = encode(mid)                     # memoizado por índice
+    tamanho = encode(mid)
 
     se menor_absoluto é None ou tamanho < menor_absoluto.tamanho:
         menor_absoluto = (mid, tamanho)
@@ -185,9 +203,9 @@ Garantias:
 
 - **Não desperdiça qualidade.** Se o degrau 0 já cabe no alvo, é ele que
   sai. A busca binária chega nele em ~5 tentativas.
-- **Best-so-far.** A monotonicidade do tamanho ao longo da escada é forte
-  mas não perfeita — um degrau pode ocasionalmente sair um pouco maior que o
-  anterior. Como todo resultado válido visto é registrado, o resultado
+- **Best-so-far.** A invariante garante a ordenação dos parâmetros, mas o
+  codificador tem ruído próprio: um degrau pode ocasionalmente sair um pouco
+  maior que o anterior. Como todo resultado válido visto é registrado, o resultado
   entregue nunca é pior que o melhor já encontrado durante a busca.
 - **Alvo inatingível.** Se nenhum degrau cabe, entrega o `menor_absoluto` e
   informa o tamanho na interface, sem tratar como erro.
