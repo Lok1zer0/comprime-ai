@@ -10,3 +10,6 @@ venv/
 
 # Saídas de teste
 *_comprimido*.gif
+
+# Scratch do subagent-driven-development
+.superpowers/
