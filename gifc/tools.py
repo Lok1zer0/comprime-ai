@@ -87,11 +87,11 @@ def extract_gifsicle(zip_bytes: bytes, bin_dir: Path) -> Path:
             raise DownloadError(
                 "O arquivo baixado não contém gifsicle.exe."
             )
-        # Proteção contra zip-slip: o caminho normalizado deve ficar dentro
-        # do diretório de destino.
-        resolvido = (bin_dir / Path(alvo).name).resolve()
-        if not resolvido.is_relative_to(bin_dir.resolve()):
-            raise DownloadError(f"Caminho inseguro no zip: {alvo}")
+        # Proteção contra zip-slip: rejeita qualquer entrada cujo caminho
+        # contenha "..". Isso é defesa em profundidade — a garantia real de
+        # segurança é que `destino` acima é sempre `gifsicle_path(bin_dir)`,
+        # nunca um caminho derivado da entrada do zip, então o local de
+        # escrita é fixo estruturalmente, independente do que o zip alegar.
         if ".." in Path(alvo).parts:
             raise DownloadError(f"Caminho inseguro no zip: {alvo}")
 
@@ -104,7 +104,14 @@ def download_gifsicle(
     bin_dir: Path = BIN_DIR,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> Path:
-    """Baixa o gifsicle portátil para `bin_dir` e devolve o caminho do exe."""
+    """Baixa o gifsicle portátil para `bin_dir` e devolve o caminho do exe.
+
+    `on_progress`, quando fornecido, recebe `(baixado, total)` a cada trecho
+    lido. Se o servidor não enviar `Content-Length`, `total` chega como 0 —
+    quem for calcular uma porcentagem a partir disso deve tratar esse caso
+    por conta própria, para não dividir por zero.
+    """
+    limite = GIFSICLE_SIZE * 4
     try:
         with urllib.request.urlopen(GIFSICLE_URL, timeout=60) as resp:
             total = int(resp.headers.get("Content-Length", 0))
@@ -116,6 +123,11 @@ def download_gifsicle(
                     break
                 pedacos.append(pedaco)
                 baixado += len(pedaco)
+                if baixado > limite:
+                    raise DownloadError(
+                        "O download do gifsicle excedeu o tamanho máximo "
+                        f"esperado ({limite} bytes)."
+                    )
                 if on_progress is not None:
                     on_progress(baixado, total)
             dados = b"".join(pedacos)
