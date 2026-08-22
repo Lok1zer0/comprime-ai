@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import shutil
 import sys
+import urllib.request
+import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BIN_DIR = PROJECT_ROOT / "bin"
+
+GIFSICLE_URL = (
+    "https://eternallybored.org/misc/gifsicle/releases/gifsicle-1.95-win64.zip"
+)
+GIFSICLE_SIZE = 230_072
+# Preenchido no Step 5, a partir do download verificado.
+GIFSICLE_SHA256 = "7e47dd0bfd5ee47f911464c57faeed89a8709a7625dd1c449b16579889539ee8"
 
 
 class MissingToolError(Exception):
@@ -55,3 +67,66 @@ def find_tools(bin_dir: Path = BIN_DIR) -> Tools:
     gifsicle = str(local) if local.is_file() else shutil.which("gifsicle")
 
     return Tools(ffmpeg=ffmpeg, ffprobe=ffprobe, gifsicle=gifsicle)
+
+
+class DownloadError(Exception):
+    """Falha ao obter ou extrair o gifsicle."""
+
+
+def extract_gifsicle(zip_bytes: bytes, bin_dir: Path) -> Path:
+    """Extrai o executável do gifsicle de dentro do zip baixado."""
+    destino = gifsicle_path(bin_dir)
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+        alvo = next(
+            (n for n in z.namelist() if Path(n).name.lower() == "gifsicle.exe"),
+            None,
+        )
+        if alvo is None:
+            raise DownloadError(
+                "O arquivo baixado não contém gifsicle.exe."
+            )
+        # Proteção contra zip-slip: o caminho normalizado deve ficar dentro
+        # do diretório de destino.
+        resolvido = (bin_dir / Path(alvo).name).resolve()
+        if not resolvido.is_relative_to(bin_dir.resolve()):
+            raise DownloadError(f"Caminho inseguro no zip: {alvo}")
+        if ".." in Path(alvo).parts:
+            raise DownloadError(f"Caminho inseguro no zip: {alvo}")
+
+        destino.write_bytes(z.read(alvo))
+
+    return destino
+
+
+def download_gifsicle(
+    bin_dir: Path = BIN_DIR,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> Path:
+    """Baixa o gifsicle portátil para `bin_dir` e devolve o caminho do exe."""
+    try:
+        with urllib.request.urlopen(GIFSICLE_URL, timeout=60) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            pedacos: list[bytes] = []
+            baixado = 0
+            while True:
+                pedaco = resp.read(64 * 1024)
+                if not pedaco:
+                    break
+                pedacos.append(pedaco)
+                baixado += len(pedaco)
+                if on_progress is not None:
+                    on_progress(baixado, total)
+            dados = b"".join(pedacos)
+    except OSError as exc:
+        raise DownloadError(f"Não foi possível baixar o gifsicle: {exc}") from exc
+
+    digest = hashlib.sha256(dados).hexdigest()
+    if GIFSICLE_SHA256 and digest != GIFSICLE_SHA256:
+        raise DownloadError(
+            "O gifsicle baixado não confere com o hash esperado.\n"
+            f"esperado: {GIFSICLE_SHA256}\nobtido:   {digest}"
+        )
+
+    return extract_gifsicle(dados, bin_dir)

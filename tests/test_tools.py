@@ -1,8 +1,21 @@
+import hashlib
+import io
+import zipfile
 from pathlib import Path
 
 import pytest
 
-from gifc.tools import MissingToolError, Tools, find_tools, gifsicle_path
+from gifc.tools import (
+    GIFSICLE_SHA256,
+    GIFSICLE_URL,
+    DownloadError,
+    MissingToolError,
+    Tools,
+    download_gifsicle,
+    extract_gifsicle,
+    find_tools,
+    gifsicle_path,
+)
 
 
 def test_gifsicle_path_fica_dentro_do_bin_dir(tmp_path):
@@ -40,3 +53,49 @@ def test_tools_e_imutavel():
 def test_missing_tool_error_nomeia_a_ferramenta():
     err = MissingToolError("ffmpeg")
     assert "ffmpeg" in str(err)
+
+
+def _zip_com(nomes: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for nome, dados in nomes.items():
+            z.writestr(nome, dados)
+    return buf.getvalue()
+
+
+def test_url_e_https_e_aponta_para_gifsicle():
+    assert GIFSICLE_URL.startswith("https://")
+    assert "gifsicle" in GIFSICLE_URL
+
+
+def test_extract_gifsicle_acha_o_exe_em_subpasta(tmp_path):
+    conteudo = b"binario-falso"
+    dados = _zip_com({"gifsicle-1.95-win64/gifsicle.exe": conteudo})
+    destino = extract_gifsicle(dados, tmp_path)
+    assert destino.is_file()
+    assert destino.read_bytes() == conteudo
+
+
+def test_extract_gifsicle_sem_o_exe_levanta_erro(tmp_path):
+    dados = _zip_com({"leiame.txt": b"nada aqui"})
+    with pytest.raises(DownloadError, match="gifsicle"):
+        extract_gifsicle(dados, tmp_path)
+
+
+def test_extract_gifsicle_rejeita_caminho_de_escape(tmp_path):
+    # zip-slip: entrada tentando escrever fora do destino
+    dados = _zip_com({"../../gifsicle.exe": b"malicioso"})
+    with pytest.raises(DownloadError):
+        extract_gifsicle(dados, tmp_path)
+
+
+def test_sha256_registrado_tem_formato_valido():
+    assert len(GIFSICLE_SHA256) == 64
+    int(GIFSICLE_SHA256, 16)  # levanta ValueError se não for hex
+
+
+@pytest.mark.integration
+def test_download_real_bate_o_hash(tmp_path):
+    destino = download_gifsicle(tmp_path)
+    assert destino.is_file()
+    assert destino.stat().st_size > 50_000
