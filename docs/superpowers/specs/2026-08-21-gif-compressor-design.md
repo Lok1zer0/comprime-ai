@@ -212,61 +212,81 @@ Garantias:
 - **Resultado maior que o original.** Se o melhor resultado ficar acima do
   tamanho do arquivo de entrada (acontece com GIFs já muito otimizados), o
   app copia o original para o destino e informa "já estava otimizado".
-- **Memoização.** Cada índice é encodado no máximo uma vez por arquivo.
+- **Sem codificação repetida.** A bisecção nunca revisita um índice, então
+  cada degrau é codificado no máximo uma vez por arquivo.
 
 ## Estrutura de módulos
 
 ```
 gifC/
   bin/
-    gifsicle.exe            baixado no primeiro uso
+    gifsicle.exe            baixado no primeiro uso (fora do git)
   gifc/
     __init__.py
+    tools.py                localiza ffmpeg/ffprobe, baixa o gifsicle
     probe.py                metadados do GIF via ffprobe
+    ladder.py               a escada de 20 degraus (puro)
+    search.py               busca binária até o alvo (puro)
     encode.py               executa ffmpeg + gifsicle para UM Params
-    ladder.py               constrói a escada a partir dos toggles
-    search.py               busca binária até o alvo
-    tools.py                localiza/baixa ffmpeg e gifsicle
+    compress.py             orquestra probe -> escada -> busca -> arquivo
     app.py                  GUI Tkinter
   main.py                   entrypoint
   tests/
-    test_ladder.py
-    test_search.py
-    test_encode.py
+    conftest.py             fixtures `tools` e `gif_pequeno`
+    test_tools.py  test_probe.py  test_ladder.py  test_search.py
+    test_encode.py  test_compress.py  test_app.py
   requirements.txt
-  docs/superpowers/specs/
+  docs/superpowers/
 ```
 
 ### Contratos
 
-**`probe.probe(path) -> GifInfo`**
-`GifInfo(width, height, fps, frame_count, duration, size_bytes)`. Só leitura,
-via `ffprobe -v error -print_format json -show_streams`. Levanta
-`ProbeError` se o arquivo não for um GIF válido.
+**`tools.find_tools(bin_dir=BIN_DIR) -> Tools`**
+`Tools(ffmpeg, ffprobe, gifsicle)`, congelada. `gifsicle` é `None` quando o
+binário não está disponível — o app segue em modo degradado, sem o estágio
+lossy. Levanta `MissingToolError` (com atributo `.tool`) se faltar ffmpeg ou
+ffprobe. `download_gifsicle(bin_dir, on_progress=None) -> Path` busca o
+binário portátil, confere o SHA256 fixado e levanta `DownloadError` em
+qualquer falha — inclusive de escrita em disco, para que o app caia em modo
+degradado em vez de morrer na inicialização.
 
-**`encode.encode(src, dst, params, tools) -> int`**
-Roda os dois estágios e devolve o tamanho em bytes de `dst`. Determinístico
-dado `(src, params)`. Usa um arquivo temporário para o intermediário e o
-remove em `finally`. Levanta `EncodeError` com o stderr da ferramenta que
-falhou.
-
-`Params(colors, lossy, scale_pct, fps)` — dataclass congelada, hashável, é a
-chave da memoização.
+**`probe.probe(path, tools) -> GifInfo`**
+`GifInfo(path, width, height, fps, frame_count, duration, size_bytes)`,
+congelada. Só leitura. Levanta `ProbeError` se o arquivo não for um GIF
+válido. Quando o `avg_frame_rate` do arquivo é inutilizável, `fps` cai para
+`FPS_PADRAO` (10.0) e a `duration` fica `0.0` em vez de ser derivada do
+palpite — um "não sei" honesto vale mais que um número inventado.
 
 **`ladder.build(info, toggles) -> list[Params]`**
-Função pura. Recebe o `GifInfo` (para saber o FPS e a largura originais) e
-os quatro booleanos. Devolve a escada filtrada e deduplicada. Não toca em
-disco — testável sem ffmpeg.
+Função pura. `Params(colors, lossy, scale_pct, fps)` é congelada e hashável;
+`fps=None` significa manter o framerate original. `Toggles(palette, lossy,
+scale, fps)` são os quatro booleanos da interface. Devolve a escada filtrada
+e deduplicada, preservando a ordem. `target_width(width, scale_pct) -> int`
+dá a largura par com piso de 16px.
 
-**`search.find_best(ladder, target_bytes, encode_fn, on_progress) -> Result`**
-`encode_fn` é injetado, então a lógica de busca é testável com um encoder
-falso de curva conhecida, em milissegundos. `on_progress(indice, params,
-tamanho)` alimenta o log da UI. `Result(params, size_bytes, path, attempts,
-hit_target)`.
+**`search.find_best(ladder, target_bytes, encode_fn, on_progress=None, should_cancel=None) -> SearchResult`**
+`encode_fn(index, params) -> int` é injetado, então a busca é testável com
+um codificador falso de curva conhecida, em milissegundos. Um degrau que
+falha sinaliza `RungFailed(mensagem)`; a busca registra o motivo no `Attempt`
+e o trata como grande demais, seguindo adiante em vez de derrubar o arquivo.
+`SearchResult(index, params, size_bytes, hit_target, attempts)`;
+`Attempt(index, params, size_bytes, erro=None)`. `on_progress(attempt,
+total)` alimenta o log da UI. Levanta `Cancelled` se `should_cancel()` virar
+verdadeiro entre tentativas.
 
-**`tools.ensure_tools() -> Tools`**
-Verifica `ffmpeg`/`ffprobe` no PATH e `bin/gifsicle.exe` na pasta do app.
-Levanta `MissingToolError` nomeando o que falta.
+**`encode.encode(src, dst, params, info, tools) -> int`**
+Roda os dois estágios e devolve o tamanho de `dst`. Parte sempre do arquivo
+original, nunca do resultado de uma tentativa anterior, para não acumular
+perda. Usa um temporário para o intermediário e o remove em `finally`.
+Levanta `EncodeError` com o stderr da ferramenta que falhou.
+
+**`compress.compress_file(src, target_bytes, toggles, tools, on_progress=None, should_cancel=None) -> CompressResult`**
+A única porta de entrada que a GUI usa. `CompressResult(src, dst,
+original_bytes, final_bytes, params, hit_target, already_optimized,
+attempts)` com a propriedade `reduction_pct`. Um degrau que falha é
+retentado uma vez antes de ser dado como perdido; se todos falharem, levanta
+`CompressError`. Sem gifsicle, desliga a coluna lossy sozinho para não
+gastar codificações em degraus idênticos.
 
 A separação importa: `ladder` e `search` concentram toda a lógica de decisão
 e não têm I/O, então são testáveis de forma rápida e determinística.
