@@ -75,9 +75,13 @@ Três escolhas carregam a maior parte do ganho:
 `fps` é omitido do filtro quando o alvo é igual ao original. `scale` é
 omitido quando a escala é 100%. Nunca faz upscale nem aumenta framerate.
 
-A largura alvo é `round(largura_original × escala / 2) × 2` — arredondada
-para par, com mínimo de 16px. A altura é `-1` (proporcional). Isso evita
+A largura alvo é `int(largura_original × escala)`, elevada ao próximo par se
+for ímpar, com mínimo de 16px. A altura é `-1` (proporcional). Isso evita
 larguras degeneradas em GIFs muito pequenos e mantém o resultado previsível.
+
+> A primeira versão desta spec dizia `round(.../2) × 2`, o que contradizia os
+> próprios casos de teste: o `round` do Python arredonda para o par mais
+> próximo, então 33 daria 32 e não 34. A fórmula acima é a que está no código.
 
 ### Estágio 2 — gifsicle
 
@@ -107,21 +111,33 @@ ordenada do sacrifício menos perceptível ao mais agressivo**:
 | 6 | 64 | 60 | 100% | orig |
 | 7 | 64 | 80 | 100% | orig |
 | 8 | 64 | 100 | 100% | orig |
-| 9 | 64 | 80 | 85% | orig |
-| 10 | 64 | 100 | 85% | orig |
-| 11 | 64 | 80 | 70% | orig |
-| 12 | 64 | 100 | 70% | orig |
-| 13 | 64 | 80 | 70% | 20 |
-| 14 | 64 | 100 | 70% | 15 |
-| 15 | 64 | 100 | 70% | 12 |
-| 16 | 32 | 100 | 70% | 15 |
-| 17 | 32 | 140 | 70% | 12 |
-| 18 | 32 | 140 | 50% | 12 |
+| 9 | 64 | 100 | 85% | orig |
+| 10 | 64 | 120 | 85% | orig |
+| 11 | 64 | 120 | 70% | orig |
+| 12 | 64 | 140 | 70% | orig |
+| 13 | 64 | 140 | 70% | 20 |
+| 14 | 64 | 140 | 70% | 15 |
+| 15 | 64 | 140 | 70% | 12 |
+| 16 | 32 | 140 | 70% | 12 |
+| 17 | 32 | 160 | 70% | 12 |
+| 18 | 32 | 160 | 50% | 12 |
 | 19 | 32 | 200 | 50% | 10 |
 
 A ordem reflete o custo visual: paleta e lossy primeiro (quase invisíveis),
 resolução depois, framerate por último — porque perda de fluidez é o que
 mais salta aos olhos.
+
+**Invariante de monotonicidade.** Cada degrau é fracamente mais agressivo que
+o anterior em *todas* as quatro dimensões ao mesmo tempo: as cores nunca
+sobem, o lossy nunca desce, a escala nunca sobe e o fps nunca sobe (`orig`
+conta como o mais alto). Isso não é estética — é o que garante que o tamanho
+codificado seja monotonicamente não-crescente, e é essa garantia que torna a
+busca binária correta. Uma escada que troca uma dimensão por outra (por
+exemplo, menos cores mas mais fps) pode produzir um arquivo *maior* num
+degrau seguinte, e nesse caso a bisecção pode descartar uma região inteira
+que continha um resultado de qualidade melhor. Um teste trava essa invariante
+degrau a degrau; se você editar a tabela, ele falha antes que o defeito
+chegue à busca.
 
 ### Efeito dos toggles
 
@@ -149,8 +165,10 @@ GIF de entrada já é de baixo framerate.
 Objetivo: encontrar o **menor índice** da escada cujo resultado caiba no
 alvo — ou seja, a maior qualidade que atende ao limite de tamanho.
 
-Como o tamanho decresce ao longo da escada, isso é uma busca binária de
-lower bound, com ~5 encodes em vez de 20:
+Pela invariante de monotonicidade da escada, o tamanho é não-crescente ao
+longo dela, então isso é uma busca binária de lower bound: ~5 encodes em vez
+de 20. A bisecção só é correta *por causa* dessa invariante — ver a seção
+anterior.
 
 ```
 lo, hi = 0, n-1
@@ -159,7 +177,7 @@ menor_absoluto = None    # menor TAMANHO visto, cabendo ou não
 
 enquanto lo <= hi:
     mid = (lo + hi) // 2
-    tamanho = encode(mid)                     # memoizado por índice
+    tamanho = encode(mid)
 
     se menor_absoluto é None ou tamanho < menor_absoluto.tamanho:
         menor_absoluto = (mid, tamanho)
@@ -185,70 +203,90 @@ Garantias:
 
 - **Não desperdiça qualidade.** Se o degrau 0 já cabe no alvo, é ele que
   sai. A busca binária chega nele em ~5 tentativas.
-- **Best-so-far.** A monotonicidade do tamanho ao longo da escada é forte
-  mas não perfeita — um degrau pode ocasionalmente sair um pouco maior que o
-  anterior. Como todo resultado válido visto é registrado, o resultado
+- **Best-so-far.** A invariante garante a ordenação dos parâmetros, mas o
+  codificador tem ruído próprio: um degrau pode ocasionalmente sair um pouco
+  maior que o anterior. Como todo resultado válido visto é registrado, o resultado
   entregue nunca é pior que o melhor já encontrado durante a busca.
 - **Alvo inatingível.** Se nenhum degrau cabe, entrega o `menor_absoluto` e
   informa o tamanho na interface, sem tratar como erro.
 - **Resultado maior que o original.** Se o melhor resultado ficar acima do
   tamanho do arquivo de entrada (acontece com GIFs já muito otimizados), o
   app copia o original para o destino e informa "já estava otimizado".
-- **Memoização.** Cada índice é encodado no máximo uma vez por arquivo.
+- **Sem codificação repetida.** A bisecção nunca revisita um índice, então
+  cada degrau é codificado no máximo uma vez por arquivo.
 
 ## Estrutura de módulos
 
 ```
 gifC/
   bin/
-    gifsicle.exe            baixado no primeiro uso
+    gifsicle.exe            baixado no primeiro uso (fora do git)
   gifc/
     __init__.py
+    tools.py                localiza ffmpeg/ffprobe, baixa o gifsicle
     probe.py                metadados do GIF via ffprobe
+    ladder.py               a escada de 20 degraus (puro)
+    search.py               busca binária até o alvo (puro)
     encode.py               executa ffmpeg + gifsicle para UM Params
-    ladder.py               constrói a escada a partir dos toggles
-    search.py               busca binária até o alvo
-    tools.py                localiza/baixa ffmpeg e gifsicle
+    compress.py             orquestra probe -> escada -> busca -> arquivo
     app.py                  GUI Tkinter
   main.py                   entrypoint
   tests/
-    test_ladder.py
-    test_search.py
-    test_encode.py
+    conftest.py             fixtures `tools` e `gif_pequeno`
+    test_tools.py  test_probe.py  test_ladder.py  test_search.py
+    test_encode.py  test_compress.py  test_app.py
   requirements.txt
-  docs/superpowers/specs/
+  docs/superpowers/
 ```
 
 ### Contratos
 
-**`probe.probe(path) -> GifInfo`**
-`GifInfo(width, height, fps, frame_count, duration, size_bytes)`. Só leitura,
-via `ffprobe -v error -print_format json -show_streams`. Levanta
-`ProbeError` se o arquivo não for um GIF válido.
+**`tools.find_tools(bin_dir=BIN_DIR) -> Tools`**
+`Tools(ffmpeg, ffprobe, gifsicle)`, congelada. `gifsicle` é `None` quando o
+binário não está disponível — o app segue em modo degradado, sem o estágio
+lossy. Levanta `MissingToolError` (com atributo `.tool`) se faltar ffmpeg ou
+ffprobe. `download_gifsicle(bin_dir, on_progress=None) -> Path` busca o
+binário portátil, confere o SHA256 fixado e levanta `DownloadError` em
+qualquer falha — inclusive de escrita em disco, para que o app caia em modo
+degradado em vez de morrer na inicialização.
 
-**`encode.encode(src, dst, params, tools) -> int`**
-Roda os dois estágios e devolve o tamanho em bytes de `dst`. Determinístico
-dado `(src, params)`. Usa um arquivo temporário para o intermediário e o
-remove em `finally`. Levanta `EncodeError` com o stderr da ferramenta que
-falhou.
-
-`Params(colors, lossy, scale_pct, fps)` — dataclass congelada, hashável, é a
-chave da memoização.
+**`probe.probe(path, tools) -> GifInfo`**
+`GifInfo(path, width, height, fps, frame_count, duration, size_bytes)`,
+congelada. Só leitura. Levanta `ProbeError` se o arquivo não for um GIF
+válido. Quando o `avg_frame_rate` do arquivo é inutilizável, `fps` cai para
+`FPS_PADRAO` (10.0) e a `duration` fica `0.0` em vez de ser derivada do
+palpite — um "não sei" honesto vale mais que um número inventado.
 
 **`ladder.build(info, toggles) -> list[Params]`**
-Função pura. Recebe o `GifInfo` (para saber o FPS e a largura originais) e
-os quatro booleanos. Devolve a escada filtrada e deduplicada. Não toca em
-disco — testável sem ffmpeg.
+Função pura. `Params(colors, lossy, scale_pct, fps)` é congelada e hashável;
+`fps=None` significa manter o framerate original. `Toggles(palette, lossy,
+scale, fps)` são os quatro booleanos da interface. Devolve a escada filtrada
+e deduplicada, preservando a ordem. `target_width(width, scale_pct) -> int`
+dá a largura par com piso de 16px.
 
-**`search.find_best(ladder, target_bytes, encode_fn, on_progress) -> Result`**
-`encode_fn` é injetado, então a lógica de busca é testável com um encoder
-falso de curva conhecida, em milissegundos. `on_progress(indice, params,
-tamanho)` alimenta o log da UI. `Result(params, size_bytes, path, attempts,
-hit_target)`.
+**`search.find_best(ladder, target_bytes, encode_fn, on_progress=None, should_cancel=None) -> SearchResult`**
+`encode_fn(index, params) -> int` é injetado, então a busca é testável com
+um codificador falso de curva conhecida, em milissegundos. Um degrau que
+falha sinaliza `RungFailed(mensagem)`; a busca registra o motivo no `Attempt`
+e o trata como grande demais, seguindo adiante em vez de derrubar o arquivo.
+`SearchResult(index, params, size_bytes, hit_target, attempts)`;
+`Attempt(index, params, size_bytes, erro=None)`. `on_progress(attempt,
+total)` alimenta o log da UI. Levanta `Cancelled` se `should_cancel()` virar
+verdadeiro entre tentativas.
 
-**`tools.ensure_tools() -> Tools`**
-Verifica `ffmpeg`/`ffprobe` no PATH e `bin/gifsicle.exe` na pasta do app.
-Levanta `MissingToolError` nomeando o que falta.
+**`encode.encode(src, dst, params, info, tools) -> int`**
+Roda os dois estágios e devolve o tamanho de `dst`. Parte sempre do arquivo
+original, nunca do resultado de uma tentativa anterior, para não acumular
+perda. Usa um temporário para o intermediário e o remove em `finally`.
+Levanta `EncodeError` com o stderr da ferramenta que falhou.
+
+**`compress.compress_file(src, target_bytes, toggles, tools, on_progress=None, should_cancel=None) -> CompressResult`**
+A única porta de entrada que a GUI usa. `CompressResult(src, dst,
+original_bytes, final_bytes, params, hit_target, already_optimized,
+attempts)` com a propriedade `reduction_pct`. Um degrau que falha é
+retentado uma vez antes de ser dado como perdido; se todos falharem, levanta
+`CompressError`. Sem gifsicle, desliga a coluna lossy sozinho para não
+gastar codificações em degraus idênticos.
 
 A separação importa: `ladder` e `search` concentram toda a lógica de decisão
 e não têm I/O, então são testáveis de forma rápida e determinística.
