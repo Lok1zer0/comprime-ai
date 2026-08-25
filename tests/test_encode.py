@@ -1,4 +1,5 @@
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -108,6 +109,47 @@ def test_gifsicle_cmd_inclui_lossy_quando_positivo():
         FERRAMENTAS, Path("a.gif"), Path("b.gif"), Params(256, 80, 100, None)
     )
     assert "--lossy=80" in cmd
+
+
+def test_encode_modo_degradado_sem_gifsicle_usa_so_o_ffmpeg(tmp_path, monkeypatch):
+    """Sem gifsicle (`Tools.gifsicle is None`), `encode()` não roda o
+    segundo estágio: o intermediário do ffmpeg vira o resultado final via
+    `intermediario.replace(dst)`. Isto interage com o `finally` que faz
+    `intermediario.unlink(missing_ok=True)` — sem o `missing_ok=True`, esse
+    unlink levantaria FileNotFoundError depois que o `.replace()` já moveu
+    o arquivo para fora do caminho original.
+
+    `subprocess.run` é substituído por um fake que escreve no caminho de
+    destino passado no comando (o último elemento de `build_ffmpeg_cmd`),
+    para não depender de um ffmpeg real instalado.
+    """
+    import gifc.encode as encode_mod
+
+    chamadas: list[list[str]] = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        chamadas.append(cmd)
+        Path(cmd[-1]).write_bytes(b"GIF89a-fake")
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(encode_mod.subprocess, "run", fake_run)
+
+    ferramentas_degradadas = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", gifsicle=None)
+    src = tmp_path / "a.gif"
+    src.write_bytes(b"GIF89a-original")
+    dst = tmp_path / "saida.gif"
+
+    tamanho = encode(
+        src, dst, Params(64, 0, 100, None), info(), ferramentas_degradadas
+    )
+
+    assert len(chamadas) == 1, "modo degradado não deveria chamar o gifsicle"
+    assert dst.is_file()
+    assert dst.read_bytes() == b"GIF89a-fake"
+    assert tamanho == dst.stat().st_size
+    # nada além de origem e destino deve sobrar no diretório: o
+    # intermediário foi movido (replace), não copiado.
+    assert {p.name for p in tmp_path.iterdir()} == {src.name, dst.name}
 
 
 @pytest.mark.integration
