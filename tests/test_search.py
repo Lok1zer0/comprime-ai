@@ -49,18 +49,45 @@ def test_nenhum_degrau_valido_devolve_o_menor_absoluto():
     assert r.index == 9
 
 
-def test_melhor_absoluto_protege_contra_curva_nao_monotonica():
-    """Mesmo com curva não-monotônica, melhor_absoluto garante bom resultado.
+def test_busca_binaria_aceita_o_primeiro_candidato_valido_mesmo_fora_do_otimo():
+    """Em curva não-monotônica, a bisecção pode aceitar um candidato válido
+    que não é o menor índice teoricamente possível — ela nunca teve a
+    garantia de achar o ótimo global fora do contrato de monotonicidade.
 
-    O índice 4 sai fora da curva (95 bytes), maior que seus vizinhos.
-    A busca pode não encontrá-lo, mas melhor_absoluto rastreia o menor
-    tamanho visto, garantindo que o resultado não piora.
+    Este teste apenas documenta que, com o outlier no índice 4 (95 bytes,
+    maior que seus vizinhos), a busca ainda assim encontra ALGUM degrau que
+    cabe no alvo (aqui, índice 5). NÃO testa `menor_absoluto`: nenhuma
+    sondagem nesta execução deixa de bater o alvo, então `melhor_valido`
+    nunca fica None e `menor_absoluto` nunca chega a ser o valor escolhido.
+    Ver `test_menor_absoluto_mantem_o_menor_visto_nao_o_ultimo_sondado` para
+    um teste que de fato exercita `menor_absoluto`.
     """
     # o índice 4 sai fora da curva, maior que seus vizinhos
     tamanhos = [100, 90, 80, 70, 95, 50, 40, 30, 20, 10]
     r = find_best(escada(10), 75, encoder(tamanhos))
     assert r.size_bytes <= 75
     assert r.hit_target is True
+
+
+def test_menor_absoluto_mantem_o_menor_visto_nao_o_ultimo_sondado():
+    """`menor_absoluto` deve guardar o MENOR tamanho já sondado, não o
+    último sondado — a diferença só aparece quando nenhuma sondagem cabe
+    no alvo (então `melhor_valido` fica None e `menor_absoluto` decide o
+    resultado) e o último índice sondado pela bisecção não é o de menor
+    tamanho entre os sondados.
+
+    Escada de 10 degraus, alvo impossível (1 byte): a bisecção sonda, nesta
+    ordem, os índices 4, 7, 8, 9 — nenhum cabe no alvo. O menor tamanho
+    entre eles está no índice 8 (30), mas o ÚLTIMO sondado é o índice 9
+    (35). Se a lógica de atualização virasse "sempre substitui pelo mais
+    recente" (o mutante `if True:` que o review encontrou), este teste
+    devolveria índice 9 / tamanho 35 em vez de índice 8 / tamanho 30.
+    """
+    tamanhos = [999, 999, 999, 999, 50, 999, 999, 40, 30, 35]
+    r = find_best(escada(10), 1, encoder(tamanhos))
+    assert r.hit_target is False
+    assert r.index == 8
+    assert r.size_bytes == 30
 
 
 def test_nenhum_indice_e_codificado_duas_vezes():
