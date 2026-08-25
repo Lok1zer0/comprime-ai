@@ -88,6 +88,25 @@ def test_extract_gifsicle_rejeita_caminho_de_escape(tmp_path):
         extract_gifsicle(dados, tmp_path)
 
 
+def test_extract_gifsicle_com_bin_dir_ocupado_por_arquivo_vira_download_error(
+    tmp_path,
+):
+    """`OSError` durante a extração (mkdir, write_bytes) não pode escapar
+    como traceback cru — precisa virar `DownloadError`, o único tipo que
+    a GUI sabe tratar caindo para o modo degradado.
+
+    Um arquivo comum no lugar onde `bin_dir` deveria ser uma pasta é uma
+    forma simples e portável de forçar `mkdir` a levantar OSError (o
+    caso real seria OneDrive, antivírus ou permissão negada).
+    """
+    bin_dir_ocupado = tmp_path / "bin_ocupado"
+    bin_dir_ocupado.write_bytes(b"isto e um arquivo, nao uma pasta")
+
+    dados = _zip_com({"gifsicle.exe": b"binario-falso"})
+    with pytest.raises(DownloadError):
+        extract_gifsicle(dados, bin_dir_ocupado)
+
+
 def test_sha256_registrado_tem_formato_valido():
     assert len(GIFSICLE_SHA256) == 64
     int(GIFSICLE_SHA256, 16)  # levanta ValueError se não for hex

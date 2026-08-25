@@ -19,7 +19,6 @@ GIFSICLE_URL = (
     "https://eternallybored.org/misc/gifsicle/releases/gifsicle-1.95-win64.zip"
 )
 GIFSICLE_SIZE = 230_072
-# Preenchido no Step 5, a partir do download verificado.
 GIFSICLE_SHA256 = "7e47dd0bfd5ee47f911464c57faeed89a8709a7625dd1c449b16579889539ee8"
 
 
@@ -74,9 +73,22 @@ class DownloadError(Exception):
 
 
 def extract_gifsicle(zip_bytes: bytes, bin_dir: Path) -> Path:
-    """Extrai o executável do gifsicle de dentro do zip baixado."""
+    """Extrai o executável do gifsicle de dentro do zip baixado.
+
+    `bin_dir.mkdir` e a escrita do arquivo final tocam o sistema de
+    arquivos, então podem falhar por motivos alheios ao conteúdo do zip —
+    uma sincronização do OneDrive travando o diretório, antivírus
+    segurando o arquivo, permissão negada. Qualquer `OSError` nesse trecho
+    vira `DownloadError`, para que quem chama (a GUI) sempre veja o mesmo
+    tipo de falha e caia no modo degradado em vez de propagar um traceback.
+    """
     destino = gifsicle_path(bin_dir)
-    bin_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise DownloadError(
+            f"Não foi possível criar a pasta {bin_dir}: {exc}"
+        ) from exc
 
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
         alvo = next(
@@ -95,7 +107,12 @@ def extract_gifsicle(zip_bytes: bytes, bin_dir: Path) -> Path:
         if ".." in Path(alvo).parts:
             raise DownloadError(f"Caminho inseguro no zip: {alvo}")
 
-        destino.write_bytes(z.read(alvo))
+        try:
+            destino.write_bytes(z.read(alvo))
+        except OSError as exc:
+            raise DownloadError(
+                f"Não foi possível gravar {destino}: {exc}"
+            ) from exc
 
     return destino
 
@@ -135,7 +152,7 @@ def download_gifsicle(
         raise DownloadError(f"Não foi possível baixar o gifsicle: {exc}") from exc
 
     digest = hashlib.sha256(dados).hexdigest()
-    if GIFSICLE_SHA256 and digest != GIFSICLE_SHA256:
+    if digest != GIFSICLE_SHA256:
         raise DownloadError(
             "O gifsicle baixado não confere com o hash esperado.\n"
             f"esperado: {GIFSICLE_SHA256}\nobtido:   {digest}"
