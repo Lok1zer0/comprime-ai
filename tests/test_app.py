@@ -9,6 +9,8 @@ de layout/construção — sem simular arrasto ou clique.
 from __future__ import annotations
 
 import sys
+import threading
+import time
 import tkinter
 from unittest import mock
 
@@ -282,5 +284,76 @@ def test_fechar_cancela_o_after_pendente_e_sinaliza_o_worker(app, monkeypatch):
     assert app._after_id is None
 
     # devolve a janela ao estado utilizável para os próximos testes
+    app.cancelar.clear()
+    app._after_id = app.after(100, app._drenar_fila)
+
+
+def test_fechar_espera_o_worker_terminar_antes_de_destruir(app, monkeypatch):
+    """Fechar a janela com uma compressão em andamento não pode deixar o
+    worker (e o tmpdir que ele limpa no `finally`) para trás: se o worker
+    termina dentro da janela de espera, `_ao_fechar` aguarda por ele antes
+    de destruir.
+    """
+    import gifc.app as app_mod
+
+    monkeypatch.setattr(app_mod, "FECHAR_JOIN_TIMEOUT_SEGUNDOS", 1.0)
+    monkeypatch.setattr(app, "destroy", lambda: None)
+
+    terminou = threading.Event()
+    t = threading.Thread(target=terminou.set, daemon=True)
+    t.start()
+    app.trabalhando = True
+    app._thread = t
+
+    app._ao_fechar()
+
+    assert terminou.is_set()
+    assert not t.is_alive()
+
+    # devolve a janela ao estado utilizável para os próximos testes
+    app.trabalhando = False
+    app._thread = None
+    app.cancelar.clear()
+    app._after_id = app.after(100, app._drenar_fila)
+
+
+def test_fechar_nao_bloqueia_para_sempre_se_o_worker_estiver_preso(app, monkeypatch):
+    """Um worker preso dentro de uma chamada longa de subprocesso não pode
+    fazer a janela parecer travada: o `join` é limitado, e `_ao_fechar`
+    destrói a janela de qualquer forma quando o tempo se esgota — um
+    best-effort, não uma garantia de limpeza."""
+    import gifc.app as app_mod
+
+    monkeypatch.setattr(app_mod, "FECHAR_JOIN_TIMEOUT_SEGUNDOS", 0.1)
+
+    destruido = []
+    monkeypatch.setattr(app, "destroy", lambda: destruido.append(True))
+
+    preso = threading.Event()
+    liberar = threading.Event()
+
+    def trabalho_preso():
+        preso.set()
+        liberar.wait(timeout=5)  # simula um subprocesso que não retorna a tempo
+
+    t = threading.Thread(target=trabalho_preso, daemon=True)
+    t.start()
+    assert preso.wait(timeout=2), "thread de teste não chegou a rodar"
+    app.trabalhando = True
+    app._thread = t
+
+    inicio = time.monotonic()
+    app._ao_fechar()
+    duracao = time.monotonic() - inicio
+
+    assert destruido == [True], "destroy deve rodar mesmo com o worker preso"
+    assert duracao < 2.0, "_ao_fechar não pode bloquear além do timeout de join"
+
+    liberar.set()
+    t.join(timeout=2)
+
+    # devolve a janela ao estado utilizável para os próximos testes
+    app.trabalhando = False
+    app._thread = None
     app.cancelar.clear()
     app._after_id = app.after(100, app._drenar_fila)

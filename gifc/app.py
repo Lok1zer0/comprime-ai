@@ -40,6 +40,13 @@ PRESETS = [("Discord 10", 10.0), ("WhatsApp 16", 16.0), ("5", 5.0), ("2", 2.0)]
 # estimar o progresso do lote de forma honesta — não afeta a busca em si.
 TENTATIVAS_ESPERADAS_POR_ARQUIVO = 5
 
+# Quanto tempo _ao_fechar espera o worker terminar sozinho (e rodar o seu
+# `finally` de limpeza do tmpdir) antes de destruir a janela de qualquer
+# jeito. É um best-effort limitado, não uma garantia: o worker pode estar
+# preso dentro de uma chamada longa de ffmpeg/gifsicle, e a janela não pode
+# ficar parecendo travada por causa disso.
+FECHAR_JOIN_TIMEOUT_SEGUNDOS = 2.0
+
 
 def _mb(n: int) -> str:
     """Formata um tamanho em bytes como string de MB com duas casas."""
@@ -76,6 +83,7 @@ class App(TkinterDnD.Tk):
         self.trabalhando = False
         self.ultima_pasta: Path | None = None
         self._after_id: str | None = None
+        self._thread: threading.Thread | None = None
 
         # Progresso do lote atual (ver _iniciar_lote / _atualizar_progresso).
         self.total_arquivos = 0
@@ -249,9 +257,10 @@ class App(TkinterDnD.Tk):
         self.log.delete(*self.log.get_children())
         self._iniciar_lote(len(gifs))
 
-        threading.Thread(
+        self._thread = threading.Thread(
             target=self._trabalhar, args=(gifs, alvo, toggles), daemon=True
-        ).start()
+        )
+        self._thread.start()
 
     # ---------- thread de trabalho ----------
     #
@@ -394,11 +403,21 @@ class App(TkinterDnD.Tk):
             self.btn_pasta.config(state="normal")
 
     def _ao_fechar(self) -> None:
-        """Fecha a janela sem deixar callback pendente para trás.
+        """Fecha a janela sem deixar callback pendente nem worker órfão.
 
         Sinaliza o cancelamento para que um worker em andamento pare no
-        próximo checkpoint, cancela o `after` pendente para que a drenagem
-        não tente mexer em widget já destruído, e só então destrói.
+        próximo checkpoint entre tentativas, e cancela o `after` pendente
+        para que a drenagem não tente mexer em widget já destruído.
+
+        Se havia uma compressão em andamento, o worker ainda precisa
+        terminar para rodar o `finally` de `compress_file` que remove o
+        tmpdir — sem isso, um `gifc_*` cheio de `try_N.gif` fica para trás
+        em %TEMP% e o processo de ffmpeg/gifsicle continua rodando órfão.
+        Por isso esperamos o worker com um `join` limitado
+        (`FECHAR_JOIN_TIMEOUT_SEGUNDOS`) antes de destruir. É um
+        best-effort: se o worker estiver preso no meio de uma chamada
+        longa de subprocesso, o join estoura o tempo e destruímos mesmo
+        assim — a janela não pode parecer travada esperando por isso.
         """
         self.cancelar.set()
         if self._after_id is not None:
@@ -407,6 +426,15 @@ class App(TkinterDnD.Tk):
             except Exception:
                 pass  # já disparou ou a janela já está indo embora
             self._after_id = None
+
+        if self.trabalhando and self._thread is not None and self._thread.is_alive():
+            try:
+                self.status.config(text="Cancelando e limpando arquivos temporários...")
+                self.update_idletasks()
+            except Exception:
+                pass  # a janela pode já estar em processo de destruição
+            self._thread.join(timeout=FECHAR_JOIN_TIMEOUT_SEGUNDOS)
+
         self.destroy()
 
     def _cancelar(self) -> None:
