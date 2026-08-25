@@ -35,6 +35,11 @@ from gifc.tools import (
 MB = 1024 * 1024
 PRESETS = [("Discord 10", 10.0), ("WhatsApp 16", 16.0), ("5", 5.0), ("2", 2.0)]
 
+# A busca é binária sobre a escada de 20 degraus (gifc/ladder.py), então o
+# pior caso é floor(log2(20)) + 1 = 5 tentativas por arquivo. Usado só para
+# estimar o progresso do lote de forma honesta — não afeta a busca em si.
+TENTATIVAS_ESPERADAS_POR_ARQUIVO = 5
+
 
 def _mb(n: int) -> str:
     """Formata um tamanho em bytes como string de MB com duas casas."""
@@ -65,10 +70,17 @@ class App(TkinterDnD.Tk):
         self.minsize(480, 560)
 
         self.tools: Tools | None = None
+        self.erro_ferramentas: str | None = None
         self.fila: queue.Queue = queue.Queue()
         self.cancelar = threading.Event()
         self.trabalhando = False
         self.ultima_pasta: Path | None = None
+        self._after_id: str | None = None
+
+        # Progresso do lote atual (ver _iniciar_lote / _atualizar_progresso).
+        self.total_arquivos = 0
+        self.arquivos_concluidos = 0
+        self.tentativas_arquivo_atual = 0
 
         self.alvo_mb = StringVar(value="10")
         self.tg_palette = BooleanVar(value=True)
@@ -77,8 +89,9 @@ class App(TkinterDnD.Tk):
         self.tg_fps = BooleanVar(value=True)
 
         self._montar()
+        self.protocol("WM_DELETE_WINDOW", self._ao_fechar)
         self._checar_ferramentas()
-        self.after(100, self._drenar_fila)
+        self._after_id = self.after(100, self._drenar_fila)
 
     # ---------- construção da interface ----------
 
@@ -151,6 +164,7 @@ class App(TkinterDnD.Tk):
         try:
             self.tools = find_tools(BIN_DIR)
         except MissingToolError as exc:
+            self.erro_ferramentas = str(exc)
             messagebox.showerror("Ferramenta ausente", str(exc))
             self._log(f"ERRO: {exc}")
             return
@@ -200,7 +214,10 @@ class App(TkinterDnD.Tk):
             messagebox.showinfo("Aguarde", "Já existe uma compressão em andamento.")
             return
         if self.tools is None:
-            messagebox.showerror("Sem ferramentas", "ffmpeg não foi encontrado.")
+            messagebox.showerror(
+                "Sem ferramentas",
+                self.erro_ferramentas or "ffmpeg não foi encontrado.",
+            )
             return
 
         gifs = [p for p in caminhos if p.suffix.lower() == ".gif" and p.is_file()]
@@ -230,6 +247,7 @@ class App(TkinterDnD.Tk):
         self.cancelar.clear()
         self.btn_cancelar.config(state="normal")
         self.log.delete(*self.log.get_children())
+        self._iniciar_lote(len(gifs))
 
         threading.Thread(
             target=self._trabalhar, args=(gifs, alvo, toggles), daemon=True
@@ -260,28 +278,50 @@ class App(TkinterDnD.Tk):
                 self.fila.put(("log", "Cancelado."))
                 break
             except Exception as exc:  # falha em um arquivo não derruba o lote
-                self.fila.put(("log", f"ERRO em {gif.name}: {exc}"))
+                self.fila.put(("erro_arquivo", f"{gif.name}: {exc}"))
         self.fila.put(("fim", None))
 
     # ---------- drenagem da fila na thread da UI ----------
 
     def _drenar_fila(self) -> None:
+        """Drena a fila do worker e reagenda a si mesma.
+
+        O reagendamento fica num `finally` de propósito: se um handler
+        levantar, o Tk engole o traceback silenciosamente, e sem o `finally`
+        o laço morreria para sempre — a janela ficaria congelada no meio de
+        um lote, sem log, sem barra e sem forma de recuperar. Cada mensagem
+        também é tratada isoladamente, para que uma carga inesperada não
+        derrube o laço inteiro.
+        """
         try:
             while True:
-                tipo, carga = self.fila.get_nowait()
-                if tipo == "status":
-                    self.status.config(text=carga)
-                elif tipo == "log":
-                    self._log(carga)
-                elif tipo == "tentativa":
-                    self._log_tentativa(*carga)
-                elif tipo == "resultado":
-                    self._log_resultado(carga)
-                elif tipo == "fim":
-                    self._terminar()
-        except queue.Empty:
-            pass
-        self.after(100, self._drenar_fila)
+                try:
+                    tipo, carga = self.fila.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self._tratar_mensagem(tipo, carga)
+                except Exception as exc:  # nunca derruba o laço de drenagem
+                    self._log(f"Erro interno ao processar mensagem: {exc}")
+        finally:
+            self._after_id = self.after(100, self._drenar_fila)
+
+    def _tratar_mensagem(self, tipo: str, carga: object) -> None:
+        if tipo == "status":
+            self.status.config(text=carga)
+        elif tipo == "log":
+            self._log(str(carga))
+        elif tipo == "erro_arquivo":
+            self.arquivos_concluidos += 1
+            self.tentativas_arquivo_atual = 0
+            self._atualizar_progresso()
+            self._log(f"ERRO em {carga}")
+        elif tipo == "tentativa":
+            self._log_tentativa(*carga)  # type: ignore[misc]
+        elif tipo == "resultado":
+            self._log_resultado(carga)  # type: ignore[arg-type]
+        elif tipo == "fim":
+            self._terminar()
 
     def _log(self, texto: str) -> None:
         item = self.log.insert("", "end", text=texto)
@@ -294,10 +334,40 @@ class App(TkinterDnD.Tk):
             f"  degrau {a.index}/{total - 1} · {p.colors} cores · "
             f"lossy {p.lossy} · {p.scale_pct}% · {fps} → {_mb(a.size_bytes)}"
         )
-        self.barra.config(value=min(100, self.barra["value"] + 20))
+        self.tentativas_arquivo_atual += 1
+        self._atualizar_progresso()
+
+    # ---------- progresso do lote ----------
+
+    def _iniciar_lote(self, total_arquivos: int) -> None:
+        """Zera o progresso no começo de cada lote."""
+        self.total_arquivos = total_arquivos
+        self.arquivos_concluidos = 0
+        self.tentativas_arquivo_atual = 0
+        self.barra.config(value=0)
+
+    def _atualizar_progresso(self) -> None:
+        """Progresso do lote inteiro, não de um arquivo isolado.
+
+        Conta em unidades de tentativa: cada arquivo custa cerca de
+        TENTATIVAS_ESPERADAS_POR_ARQUIVO codificações, então a barra anda de
+        forma suave mesmo quando o usuário soltou um único GIF — em vez de
+        ficar parada em zero por vinte segundos e pular direto para 100.
+        """
+        if self.total_arquivos <= 0:
+            return
+        esperado = self.total_arquivos * TENTATIVAS_ESPERADAS_POR_ARQUIVO
+        feito = (
+            self.arquivos_concluidos * TENTATIVAS_ESPERADAS_POR_ARQUIVO
+            + self.tentativas_arquivo_atual
+        )
+        self.barra.config(value=min(100.0, 100.0 * feito / esperado))
 
     def _log_resultado(self, r: CompressResult) -> None:
         self.ultima_pasta = r.dst.parent
+        self.arquivos_concluidos += 1
+        self.tentativas_arquivo_atual = 0
+        self._atualizar_progresso()
         if r.already_optimized:
             self._log(f"{r.src.name}: já estava otimizado, cópia mantida.")
         else:
@@ -318,6 +388,22 @@ class App(TkinterDnD.Tk):
         self.status.config(text="Pronto.")
         if self.ultima_pasta is not None:
             self.btn_pasta.config(state="normal")
+
+    def _ao_fechar(self) -> None:
+        """Fecha a janela sem deixar callback pendente para trás.
+
+        Sinaliza o cancelamento para que um worker em andamento pare no
+        próximo checkpoint, cancela o `after` pendente para que a drenagem
+        não tente mexer em widget já destruído, e só então destrói.
+        """
+        self.cancelar.set()
+        if self._after_id is not None:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass  # já disparou ou a janela já está indo embora
+            self._after_id = None
+        self.destroy()
 
     def _cancelar(self) -> None:
         self.cancelar.set()

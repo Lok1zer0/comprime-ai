@@ -9,6 +9,8 @@ de layout/construção — sem simular arrasto ou clique.
 from __future__ import annotations
 
 import tkinter
+from unittest import mock
+
 import pytest
 
 from gifc.app import MB, _mb, _parse_alvo_mb
@@ -65,28 +67,174 @@ def test_parse_alvo_invalido_levanta_value_error(texto):
 # ---------- construção da janela (sem mainloop) ----------
 
 
-def _tk_disponivel() -> bool:
-    try:
-        r = tkinter.Tk()
-        r.destroy()
-        return True
-    except tkinter.TclError:
-        return False
+@pytest.fixture(scope="module")
+def _janela():
+    """Uma única janela para todo o módulo.
 
-
-@pytest.mark.skipif(not _tk_disponivel(), reason="sem display/Tk disponível")
-def test_app_constroi_e_realiza_widgets_sem_erro(monkeypatch):
-    # Nunca deixar um messagebox modal bloquear o teste, independente do
-    # estado de bin/ ou do PATH nesta máquina.
+    Criar vários `Tk()` no mesmo processo é intermitentemente instável no
+    Python da Windows Store — falha ao localizar `init.tcl`, sem padrão
+    reproduzível. Compartilhar uma raiz só remove a fragilidade e ainda
+    deixa a suíte mais rápida.
+    """
     import gifc.app as app_mod
 
-    monkeypatch.setattr(app_mod.messagebox, "showerror", lambda *a, **k: None)
-    monkeypatch.setattr(app_mod.messagebox, "showwarning", lambda *a, **k: None)
-    monkeypatch.setattr(app_mod.messagebox, "askyesno", lambda *a, **k: False)
+    # Nenhum modal pode bloquear a suíte, seja qual for o estado de bin/
+    # ou do PATH nesta máquina.
+    with (
+        mock.patch.object(app_mod.messagebox, "showerror", lambda *a, **k: None),
+        mock.patch.object(app_mod.messagebox, "showwarning", lambda *a, **k: None),
+        mock.patch.object(app_mod.messagebox, "askyesno", lambda *a, **k: False),
+    ):
+        try:
+            janela = app_mod.App()
+        except tkinter.TclError as exc:
+            pytest.skip(f"sem Tk utilizável: {exc}")
+        janela.update()
 
-    app = app_mod.App()
     try:
-        app.update()
-        assert str(app.title()) == "Compressor de GIF"
+        yield janela
     finally:
-        app.destroy()
+        janela.destroy()
+
+
+@pytest.fixture
+def app(_janela):
+    """Estado zerado a cada teste, sobre a janela compartilhada."""
+    _janela.log.delete(*_janela.log.get_children())
+    while not _janela.fila.empty():
+        _janela.fila.get_nowait()
+    _janela.cancelar.clear()
+    _janela.trabalhando = False
+    _janela.ultima_pasta = None
+    _janela._iniciar_lote(0)
+    return _janela
+
+
+# ---------- construção ----------
+
+
+def test_app_constroi_e_realiza_widgets_sem_erro(app):
+    assert str(app.title()) == "Compressor de GIF"
+
+
+def test_app_comeca_ociosa(app):
+    assert app.trabalhando is False
+    assert app._after_id is not None
+
+
+# ---------- resiliência do laço de drenagem ----------
+
+
+def test_drenagem_reagenda_mesmo_quando_um_handler_levanta(app, monkeypatch):
+    """Um handler que explode não pode matar o laço de drenagem.
+
+    Sem o `finally` no reagendamento, a janela congelaria para sempre no
+    meio de um lote: sem log, sem barra e sem forma de recuperar.
+    """
+    def handler_explosivo(tipo, carga):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(app, "_tratar_mensagem", handler_explosivo)
+    app.fila.put(("log", "qualquer coisa"))
+
+    antes = app._after_id
+    app._drenar_fila()
+
+    assert app._after_id is not None
+    assert app._after_id != antes, "o laço não se reagendou"
+
+
+def test_drenagem_registra_o_erro_no_log_em_vez_de_silenciar(app, monkeypatch):
+    def handler_explosivo(tipo, carga):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(app, "_tratar_mensagem", handler_explosivo)
+    app.fila.put(("log", "qualquer coisa"))
+    app._drenar_fila()
+
+    textos = [app.log.item(i, "text") for i in app.log.get_children()]
+    assert any("boom" in t for t in textos)
+
+
+def test_drenagem_esvazia_a_fila_inteira_de_uma_vez(app):
+    for i in range(5):
+        app.fila.put(("log", f"linha {i}"))
+    app._drenar_fila()
+
+    textos = [app.log.item(i, "text") for i in app.log.get_children()]
+    assert sum(1 for t in textos if t.startswith("linha ")) == 5
+    assert app.fila.empty()
+
+
+# ---------- progresso do lote ----------
+
+
+def test_progresso_comeca_em_zero(app):
+    app._iniciar_lote(3)
+    assert app.barra["value"] == 0
+
+
+def test_progresso_avanca_com_as_tentativas(app):
+    from gifc.app import TENTATIVAS_ESPERADAS_POR_ARQUIVO as E
+
+    app._iniciar_lote(1)
+    app.tentativas_arquivo_atual = 1
+    app._atualizar_progresso()
+    assert app.barra["value"] == pytest.approx(100.0 / E, abs=0.01)
+
+
+def test_progresso_conta_o_lote_inteiro_nao_um_arquivo_so(app):
+    """Com 2 arquivos, terminar o primeiro deve dar ~50%, não 100%."""
+    app._iniciar_lote(2)
+    app.arquivos_concluidos = 1
+    app.tentativas_arquivo_atual = 0
+    app._atualizar_progresso()
+    assert app.barra["value"] == pytest.approx(50.0, abs=0.01)
+
+
+def test_progresso_nunca_passa_de_100(app):
+    app._iniciar_lote(1)
+    app.tentativas_arquivo_atual = 999
+    app._atualizar_progresso()
+    assert app.barra["value"] == 100.0
+
+
+def test_progresso_ignora_lote_vazio(app):
+    app._iniciar_lote(0)
+    app._atualizar_progresso()  # não pode dividir por zero
+    assert app.barra["value"] == 0
+
+
+def test_novo_lote_zera_o_progresso_do_anterior(app):
+    app._iniciar_lote(1)
+    app.tentativas_arquivo_atual = 5
+    app._atualizar_progresso()
+    assert app.barra["value"] == 100.0
+
+    app._iniciar_lote(2)
+    assert app.barra["value"] == 0
+    assert app.arquivos_concluidos == 0
+    assert app.tentativas_arquivo_atual == 0
+
+
+# ---------- fechamento ----------
+
+
+def test_fechar_cancela_o_after_pendente_e_sinaliza_o_worker(app, monkeypatch):
+    """`destroy` é neutralizado: a janela é compartilhada pelo módulo.
+
+    O que importa aqui é o que `_ao_fechar` faz ANTES de destruir — sinalizar
+    o worker e cancelar o callback pendente, para que a drenagem não tente
+    mexer em widget já morto.
+    """
+    monkeypatch.setattr(app, "destroy", lambda: None)
+    assert app._after_id is not None
+
+    app._ao_fechar()
+
+    assert app.cancelar.is_set()
+    assert app._after_id is None
+
+    # devolve a janela ao estado utilizável para os próximos testes
+    app.cancelar.clear()
+    app._after_id = app.after(100, app._drenar_fila)
