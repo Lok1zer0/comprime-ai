@@ -176,7 +176,7 @@ def test_attempt_bem_sucedido_nao_carrega_erro():
     assert all(a.erro is None for a in r.attempts)
 
 
-@pytest.mark.xfail(reason="A busca binária é correta apenas em curvas monótonas. BASE_LADDER garante monotonidade por construção, mas curvas sintéticas não-monótonas estão fora do contrato da função.")
+@pytest.mark.xfail(reason="A busca binária é correta apenas em curvas monótonas. BASE_LADDER garante monotonicidade por construção, mas curvas sintéticas não-monótonas estão fora do contrato da função.")
 def test_regressao_curva_nao_monotonica_encontra_menor_valido():
     """Demonstra que a bisecção falha em curva não-monotônica.
 
@@ -185,7 +185,7 @@ def test_regressao_curva_nao_monotonica_encontra_menor_valido():
     Mas a bisecção pode falhar porque uma sonda descarta incorretamente
     todos os índices menores quando encontra o outlier no índice 4.
 
-    Este teste documenta que find_best depende da monotonidade da escada.
+    Este teste documenta que find_best depende da monotonicidade da escada.
     """
     tamanhos = [100, 90, 80, 70, 95, 50, 40, 30, 20, 10]
     r = find_best(escada(10), 75, encoder(tamanhos))
