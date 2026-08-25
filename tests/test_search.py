@@ -3,7 +3,7 @@ import math
 import pytest
 
 from gifc.ladder import Params
-from gifc.search import Cancelled, find_best
+from gifc.search import FALHOU, Cancelled, RungFailed, find_best
 
 
 def escada(n: int) -> list[Params]:
@@ -108,6 +108,45 @@ def test_attempts_registra_todas_as_tentativas():
     r = find_best(escada(10), 55, encoder(tamanhos))
     assert len(r.attempts) >= 1
     assert all(a.size_bytes == tamanhos[a.index] for a in r.attempts)
+
+
+def test_rung_failed_e_tratado_como_grande_demais_e_a_busca_continua():
+    """Um degrau que levanta RungFailed não derruba a busca inteira.
+
+    A escada é decrescente (dá para atingir o alvo), mas o índice sondado
+    primeiro (o do meio) falha. A busca deve tratar isso como "não coube"
+    e seguir para os índices mais agressivos, achando um deles.
+    """
+    tamanhos = [100 - i * 10 for i in range(10)]  # 100, 90, ..., 10
+
+    def fn(index: int, params: Params) -> int:
+        if index == 4:  # primeiro índice sondado por escada(10), alvo qualquer
+            raise RungFailed("ffmpeg explodiu")
+        return tamanhos[index]
+
+    r = find_best(escada(10), 55, fn)
+
+    assert r.hit_target is True
+    assert r.size_bytes <= 55
+    assert any(a.index == 4 and a.erro == "ffmpeg explodiu" for a in r.attempts)
+
+
+def test_rung_failed_preserva_a_mensagem_no_attempt():
+    def fn(index: int, params: Params) -> int:
+        raise RungFailed("motivo específico do degrau")
+
+    r = find_best(escada(10), 55, fn)
+
+    assert r.size_bytes == FALHOU
+    assert r.hit_target is False
+    assert all(a.erro == "motivo específico do degrau" for a in r.attempts)
+    assert all(a.size_bytes == FALHOU for a in r.attempts)
+
+
+def test_attempt_bem_sucedido_nao_carrega_erro():
+    tamanhos = [100 - i * 10 for i in range(10)]
+    r = find_best(escada(10), 55, encoder(tamanhos))
+    assert all(a.erro is None for a in r.attempts)
 
 
 @pytest.mark.xfail(reason="A busca binária é correta apenas em curvas monótonas. BASE_LADDER garante monotonidade por construção, mas curvas sintéticas não-monótonas estão fora do contrato da função.")

@@ -328,12 +328,16 @@ class App(TkinterDnD.Tk):
         self.log.see(item)
 
     def _log_tentativa(self, a: Attempt, total: int) -> None:
-        p = a.params
-        fps = "orig" if p.fps is None else f"{p.fps:g}fps"
-        self._log(
-            f"  degrau {a.index}/{total - 1} · {p.colors} cores · "
-            f"lossy {p.lossy} · {p.scale_pct}% · {fps} → {_mb(a.size_bytes)}"
-        )
+        if a.erro is not None:
+            mensagem = a.erro if len(a.erro) <= 200 else a.erro[:200] + "..."
+            self._log(f"  degrau {a.index}/{total - 1} falhou: {mensagem}")
+        else:
+            p = a.params
+            fps = "orig" if p.fps is None else f"{p.fps:g}fps"
+            self._log(
+                f"  degrau {a.index}/{total - 1} · {p.colors} cores · "
+                f"lossy {p.lossy} · {p.scale_pct}% · {fps} → {_mb(a.size_bytes)}"
+            )
         self.tentativas_arquivo_atual += 1
         self._atualizar_progresso()
 

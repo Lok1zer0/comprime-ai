@@ -68,6 +68,63 @@ def test_degrau_que_falha_e_pulado(tmp_path, monkeypatch):
     assert r.final_bytes <= 1_800
 
 
+def test_encode_fn_tenta_de_novo_apos_falha_transitoria_no_mesmo_degrau(
+    tmp_path, monkeypatch
+):
+    """Uma falha isolada do ffmpeg/gifsicle não pode custar o degrau
+    inteiro: `compress_file` tenta de novo uma vez antes de desistir dele.
+
+    A escada padrão (TODOS os toggles, 20 degraus) faz a bisecção sondar o
+    índice 9 primeiro. Ele falha só na primeira chamada e tem sucesso na
+    segunda — o resultado final não pode carregar nenhum erro para esse
+    índice, porque a falha foi recuperada pelo retry.
+    """
+    mod, src, info, tools = _preparar(tmp_path, monkeypatch)
+    chamadas_por_indice: dict[int, int] = {}
+
+    def encode_falha_uma_vez(s, d, params, i, t):
+        idx = int(d.stem.split("_")[1])
+        chamadas_por_indice[idx] = chamadas_por_indice.get(idx, 0) + 1
+        if idx == 9 and chamadas_por_indice[idx] == 1:
+            raise EncodeError("hiccup transitório")
+        d.write_bytes(b"GIF89a" + b"y" * (2_000 - idx * 50))
+        return d.stat().st_size
+
+    monkeypatch.setattr(mod, "encode", encode_falha_uma_vez)
+
+    r = mod.compress_file(src, 1_800, TODOS, tools)
+
+    assert chamadas_por_indice[9] == 2, "o degrau 9 deveria ter sido tentado 2 vezes"
+    assert not any(a.index == 9 and a.erro is not None for a in r.attempts), (
+        "a falha transitória, recuperada no retry, não pode aparecer como erro"
+    )
+
+
+def test_encode_fn_desiste_apos_falhar_duas_vezes_seguidas_no_mesmo_degrau(
+    tmp_path, monkeypatch
+):
+    """Só depois que o retry TAMBÉM falha é que o degrau vira RungFailed."""
+    mod, src, info, tools = _preparar(tmp_path, monkeypatch)
+    chamadas_por_indice: dict[int, int] = {}
+
+    def encode_sempre_falha_no_indice_9(s, d, params, i, t):
+        idx = int(d.stem.split("_")[1])
+        chamadas_por_indice[idx] = chamadas_por_indice.get(idx, 0) + 1
+        if idx == 9:
+            raise EncodeError("degrau permanentemente ruim")
+        d.write_bytes(b"GIF89a" + b"y" * (2_000 - idx * 50))
+        return d.stat().st_size
+
+    monkeypatch.setattr(mod, "encode", encode_sempre_falha_no_indice_9)
+
+    r = mod.compress_file(src, 1_800, TODOS, tools)
+
+    assert chamadas_por_indice[9] == 2, "deve tentar exatamente 2x antes de desistir"
+    tentativa_9 = next(a for a in r.attempts if a.index == 9)
+    assert tentativa_9.erro is not None
+    assert "degrau permanentemente ruim" in tentativa_9.erro
+
+
 def test_todos_os_degraus_falhando_levanta_erro(tmp_path, monkeypatch):
     mod, src, info, tools = _preparar(tmp_path, monkeypatch)
 

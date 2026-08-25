@@ -8,12 +8,15 @@ de layout/construção — sem simular arrasto ou clique.
 
 from __future__ import annotations
 
+import sys
 import tkinter
 from unittest import mock
 
 import pytest
 
 from gifc.app import MB, _mb, _parse_alvo_mb
+from gifc.ladder import Params
+from gifc.search import Attempt
 
 
 # ---------- _mb ----------
@@ -164,6 +167,49 @@ def test_drenagem_esvazia_a_fila_inteira_de_uma_vez(app):
     textos = [app.log.item(i, "text") for i in app.log.get_children()]
     assert sum(1 for t in textos if t.startswith("linha ")) == 5
     assert app.fila.empty()
+
+
+# ---------- log de tentativas ----------
+
+
+def test_log_tentativa_bem_sucedida_mostra_o_tamanho(app):
+    a = Attempt(
+        index=3, params=Params(colors=128, lossy=30, scale_pct=100, fps=None),
+        size_bytes=int(1.5 * MB),
+    )
+    app._log_tentativa(a, total=10)
+
+    textos = [app.log.item(i, "text") for i in app.log.get_children()]
+    assert any("1.50 MB" in t for t in textos)
+    assert not any("falhou" in t for t in textos)
+
+
+def test_log_tentativa_falha_mostra_a_mensagem_nao_um_tamanho(app):
+    """Regressão: um degrau que falhou não pode ser renderizado como se
+    tivesse produzido um arquivo de 8796093022208.00 MB — o sentinela
+    FALHOU (sys.maxsize) nunca deve chegar como tamanho na UI. Em vez
+    disso, a mensagem de erro carregada em `Attempt.erro` é mostrada."""
+    a = Attempt(
+        index=7, params=Params(colors=64, lossy=100, scale_pct=85, fps=None),
+        size_bytes=sys.maxsize, erro="ffmpeg falhou: codec não suportado",
+    )
+    app._log_tentativa(a, total=10)
+
+    textos = [app.log.item(i, "text") for i in app.log.get_children()]
+    assert any("falhou" in t and "ffmpeg falhou: codec não suportado" in t for t in textos)
+    assert not any("MB" in t for t in textos)
+
+
+def test_log_tentativa_falha_trunca_mensagem_longa(app):
+    a = Attempt(
+        index=1, params=Params(colors=256, lossy=0, scale_pct=100, fps=None),
+        size_bytes=sys.maxsize, erro="x" * 5000,
+    )
+    app._log_tentativa(a, total=10)
+
+    textos = [app.log.item(i, "text") for i in app.log.get_children()]
+    alvo = next(t for t in textos if "falhou" in t)
+    assert len(alvo) < 500
 
 
 # ---------- progresso do lote ----------

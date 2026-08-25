@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import shutil
-import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,14 +11,10 @@ from pathlib import Path
 from gifc.encode import EncodeError, encode
 from gifc.ladder import Params, Toggles, build
 from gifc.probe import probe
-from gifc.search import Attempt, CancelFn, ProgressFn, find_best
+from gifc.search import FALHOU, Attempt, CancelFn, ProgressFn, RungFailed, find_best
 from gifc.tools import Tools
 
 SUFIXO = "_comprimido"
-
-# Sentinela para um degrau que falhou: a busca o trata como "grande demais"
-# e segue para degraus mais agressivos, em vez de abortar o arquivo inteiro.
-FALHOU = sys.maxsize
 
 
 class CompressError(Exception):
@@ -57,6 +52,15 @@ def unique_output_path(src: Path) -> Path:
         n += 1
 
 
+def _try_path(tmpdir: Path, index: int) -> Path:
+    """Caminho do arquivo intermediário de um degrau dentro do tmpdir.
+
+    Único lugar que sabe a convenção `try_{index}.gif` — usado tanto ao
+    codificar quanto ao localizar o vencedor depois da busca.
+    """
+    return tmpdir / f"try_{index}.gif"
+
+
 def compress_file(
     src: Path,
     target_bytes: int,
@@ -80,13 +84,22 @@ def compress_file(
     tmpdir = Path(tempfile.mkdtemp(prefix="gifc_"))
     try:
         def encode_fn(index: int, params: Params) -> int:
-            try:
-                return encode(
-                    src, tmpdir / f"try_{index}.gif", params, info, tools
-                )
-            except EncodeError:
-                # Um degrau ruim não derruba o arquivo: é pulado.
-                return FALHOU
+            # Uma falha transitória do ffmpeg/gifsicle (arquivo temporário
+            # ainda travado por antivírus, hiccup de I/O) não pode custar a
+            # metade de alta qualidade da escada inteira. Tenta de novo uma
+            # vez antes de desistir do degrau; só na segunda falha ele é
+            # reportado como RungFailed para a busca tratar como "grande
+            # demais".
+            ultimo_erro: EncodeError | None = None
+            for _tentativa in range(2):
+                try:
+                    return encode(
+                        src, _try_path(tmpdir, index), params, info, tools
+                    )
+                except EncodeError as exc:
+                    ultimo_erro = exc
+            assert ultimo_erro is not None  # o loop rodou 2x e sempre falhou
+            raise RungFailed(str(ultimo_erro))
 
         resultado = find_best(
             escada, target_bytes, encode_fn,
@@ -99,7 +112,7 @@ def compress_file(
                 f"O arquivo pode estar corrompido."
             )
 
-        vencedor = tmpdir / f"try_{resultado.index}.gif"
+        vencedor = _try_path(tmpdir, resultado.index)
 
         # GIFs já muito otimizados podem crescer ao serem reescritos.
         if resultado.size_bytes >= info.size_bytes:

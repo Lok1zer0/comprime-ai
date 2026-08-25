@@ -5,6 +5,7 @@ Não faz I/O: o encoder é injetado.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
@@ -14,9 +15,22 @@ EncodeFn = Callable[[int, Params], int]
 ProgressFn = Callable[["Attempt", int], None]
 CancelFn = Callable[[], bool]
 
+# Sentinela de tamanho para um degrau que falhou: a busca o trata como
+# "grande demais" e segue para degraus mais agressivos, em vez de abortar
+# o arquivo inteiro. O motivo real da falha vai em `Attempt.erro`.
+FALHOU = sys.maxsize
+
 
 class Cancelled(Exception):
     """A busca foi cancelada pelo usuário."""
+
+
+class RungFailed(Exception):
+    """O codificador falhou neste degrau. A busca o trata como grande demais."""
+
+    def __init__(self, mensagem: str) -> None:
+        self.mensagem = mensagem
+        super().__init__(mensagem)
 
 
 @dataclass(frozen=True)
@@ -24,6 +38,7 @@ class Attempt:
     index: int
     params: Params
     size_bytes: int
+    erro: str | None = None
 
 
 @dataclass
@@ -72,13 +87,22 @@ def find_best(
         mid = (lo + hi) // 2
         params = ladder[mid]
 
-        tamanho = encode_fn(mid, params)
-        tentativa = Attempt(index=mid, params=params, size_bytes=tamanho)
+        try:
+            tamanho = encode_fn(mid, params)
+            erro = None
+        except RungFailed as exc:
+            # O degrau não produziu resultado: tratado como "grande demais"
+            # para que a busca continue, mas o motivo é preservado no
+            # Attempt em vez de virar um tamanho fictício sem explicação.
+            tamanho = FALHOU
+            erro = exc.mensagem
+
+        tentativa = Attempt(index=mid, params=params, size_bytes=tamanho, erro=erro)
         attempts.append(tentativa)
         if on_progress is not None:
             on_progress(tentativa, total)
 
-        atual = Attempt(index=mid, params=params, size_bytes=tamanho)
+        atual = tentativa
 
         if menor_absoluto is None or tamanho < menor_absoluto.size_bytes:
             menor_absoluto = atual
