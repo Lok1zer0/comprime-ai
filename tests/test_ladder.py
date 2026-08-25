@@ -1,4 +1,6 @@
+import itertools
 from pathlib import Path
+from typing import Sequence
 
 import pytest
 
@@ -32,21 +34,27 @@ def test_escada_base_termina_no_mais_agressivo():
     assert ultimo.fps == 10.0
 
 
-def test_agressividade_nao_diminui_ao_longo_da_escada():
-    """Cada degrau é fracamente mais agressivo em TODAS as dimensões.
+def _assert_agressividade_nao_diminui(escada: Sequence[Params], rotulo: str) -> None:
+    """Verifica que cada degrau é fracamente mais agressivo que o anterior
+    em TODAS as dimensões — o mesmo invariante que `test_agressividade_nao_
+    diminui_ao_longo_da_escada` checava só para `BASE_LADDER`, fatorado
+    para ser reutilizável também sobre a saída de `build()`.
 
     Isto é necessário para que o tamanho codificado seja monotonicamente
     não-crescente, garantindo que a busca binária de lower bound é válida.
     """
-    for i, (anterior, atual) in enumerate(zip(BASE_LADDER, BASE_LADDER[1:])):
+    for i, (anterior, atual) in enumerate(zip(escada, escada[1:])):
         assert atual.colors <= anterior.colors, (
-            f"Rung {i} -> {i+1}: colors aumentou ({anterior.colors} -> {atual.colors})"
+            f"[{rotulo}] Rung {i} -> {i+1}: colors aumentou "
+            f"({anterior.colors} -> {atual.colors})"
         )
         assert atual.lossy >= anterior.lossy, (
-            f"Rung {i} -> {i+1}: lossy diminui ({anterior.lossy} -> {atual.lossy})"
+            f"[{rotulo}] Rung {i} -> {i+1}: lossy diminui "
+            f"({anterior.lossy} -> {atual.lossy})"
         )
         assert atual.scale_pct <= anterior.scale_pct, (
-            f"Rung {i} -> {i+1}: scale_pct aumentou ({anterior.scale_pct} -> {atual.scale_pct})"
+            f"[{rotulo}] Rung {i} -> {i+1}: scale_pct aumentou "
+            f"({anterior.scale_pct} -> {atual.scale_pct})"
         )
         # fps: None é o maior (original), números são menores
         if anterior.fps is None:
@@ -56,13 +64,19 @@ def test_agressividade_nao_diminui_ao_longo_da_escada():
             # Anterior tem fps específico, atual deve ter fps <= anterior.fps ou None não é permitido
             if atual.fps is not None:
                 assert atual.fps <= anterior.fps, (
-                    f"Rung {i} -> {i+1}: fps aumentou ({anterior.fps} -> {atual.fps})"
+                    f"[{rotulo}] Rung {i} -> {i+1}: fps aumentou "
+                    f"({anterior.fps} -> {atual.fps})"
                 )
             else:
                 # atual.fps is None, que significa source fps (None > qualquer número)
                 assert False, (
-                    f"Rung {i} -> {i+1}: fps aumentou ({anterior.fps} -> None)"
+                    f"[{rotulo}] Rung {i} -> {i+1}: fps aumentou "
+                    f"({anterior.fps} -> None)"
                 )
+
+
+def test_agressividade_nao_diminui_ao_longo_da_escada():
+    _assert_agressividade_nao_diminui(BASE_LADDER, "BASE_LADDER")
 
 
 def test_params_e_hashavel():
@@ -115,6 +129,32 @@ def test_escada_nao_tem_duplicatas():
     ]:
         escada = build(info(), toggles)
         assert len(escada) == len(set(escada))
+
+
+@pytest.mark.parametrize(
+    "toggles",
+    [
+        Toggles(p, l, s, f)
+        for p, l, s, f in itertools.product([True, False], repeat=4)
+    ],
+    ids=lambda t: f"palette={t.palette},lossy={t.lossy},scale={t.scale},fps={t.fps}",
+)
+@pytest.mark.parametrize("fps_origem", [10, 12, 15, 20, 30])
+def test_build_preserva_monotonicidade_para_qualquer_combinacao_de_toggles(
+    toggles, fps_origem
+):
+    """A busca binária em `find_best` depende de `build()` devolver uma
+    escada monotonicamente não-crescente — `test_agressividade_nao_diminui_
+    ao_longo_da_escada` só verificava isso para `BASE_LADDER` sem toggles
+    aplicados. Como o precondicionamento da busca é sobre a SAÍDA de
+    `build()`, e não sobre `BASE_LADDER` diretamente, cada uma das 16
+    combinações de toggles (2**4) precisa preservar o invariante, para
+    alguns fps de origem representativos (incluindo valores baixos que
+    colapsam mais degraus de fps em None via `test_fps_alvo_acima_do_
+    original_vira_none`).
+    """
+    escada = build(info(fps=float(fps_origem)), toggles)
+    _assert_agressividade_nao_diminui(escada, f"toggles={toggles}, fps={fps_origem}")
 
 
 def test_dedup_preserva_a_ordem_original():
