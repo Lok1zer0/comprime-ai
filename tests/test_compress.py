@@ -621,3 +621,128 @@ def test_conversao_sem_ganho_nao_deixa_tmpdir_nem_webp(tmp_path, monkeypatch):
 
     assert criados and not criados[0].exists()
     assert {p.name for p in tmp_path.iterdir()} == {src.name, r.dst.name}
+
+
+# --- alvo folgado não é restrição -----------------------------------------
+
+
+def _tamanho_pelo_degrau(monkeypatch, base: int, passo: int) -> None:
+    """WebP falso cujo tamanho DIMINUI com o índice do degrau na tabela:
+    `base - passo * índice`. Sem toggles desligados a escada é a tabela."""
+
+    def falso(s, d, params, i, t):
+        tamanho = base - passo * formato_webp.TABELA.index(params)
+        d.write_bytes(b"w" * tamanho)
+        return tamanho
+
+    monkeypatch.setattr(formato_webp, "codificar", falso)
+
+
+@pytest.mark.parametrize("alvo", [10_000_000, 5_000, 4_999])
+def test_alvo_maior_ou_igual_a_entrada_vira_menor_que_a_entrada(
+    tmp_path, monkeypatch, alvo
+):
+    """Um alvo >= à entrada não é restrição: pede-se "menor", não "qualquer
+    coisa abaixo de 10 MB". O degrau vencedor é o de maior qualidade que
+    ficou realmente menor que a entrada, e não o degrau 0 (maior que ela),
+    que faria o original ser devolvido com uma economia já calculada."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.JPEG)
+    _tamanho_pelo_degrau(monkeypatch, base=6_000, passo=500)
+    efetivo = min(alvo, info.size_bytes - 1)
+    esperado = next(
+        i for i in range(len(formato_webp.TABELA)) if 6_000 - 500 * i <= efetivo
+    )
+    assert esperado > 0   # o degrau 0 é maior que a entrada: o caso do bug
+
+    r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert r.already_optimized is False
+    assert r.formato_saida is Formato.WEBP
+    assert r.params == formato_webp.TABELA[esperado]
+    assert r.final_bytes < info.size_bytes
+    # hit_target é contra o alvo do USUÁRIO, não contra o limite interno.
+    assert r.hit_target is True
+
+
+def test_alvo_abaixo_da_entrada_segue_inalterado(tmp_path, monkeypatch):
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.JPEG)
+    _tamanho_pelo_degrau(monkeypatch, base=6_000, passo=500)
+    alvo = 3_500
+    assert alvo < info.size_bytes - 1
+    esperado = next(
+        i for i in range(len(formato_webp.TABELA)) if 6_000 - 500 * i <= alvo
+    )
+
+    r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert r.params == formato_webp.TABELA[esperado]
+    assert r.final_bytes <= alvo and r.hit_target is True
+
+
+def test_alvo_abaixo_da_entrada_e_inatingivel_continua_sem_atingir(
+    tmp_path, monkeypatch
+):
+    """O limite interno não pode transformar "não deu" em "deu"."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.JPEG)
+    _tamanho_pelo_degrau(monkeypatch, base=4_900, passo=10)
+
+    r = mod.compress_file(src, 100, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert r.already_optimized is False
+    assert r.hit_target is False
+    assert r.final_bytes > 100
+
+
+def test_entrada_minuscula_cai_em_ja_otimizado_sem_quebrar(tmp_path, monkeypatch):
+    """Com 1 byte, `tamanho - 1` é 0: nada é atingível, e o resultado é o
+    original copiado, não um erro nem um alvo negativo."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    src.write_bytes(b"x")
+    monkeypatch.setattr(mod, "probe", lambda p: ImagemInfo(
+        path=src, formato=Formato.PNG, width=1, height=1, fps=10.0,
+        frame_count=1, duration=0.0, size_bytes=1,
+    ))
+    _webp_falso(monkeypatch, 30)
+
+    r = mod.compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS,
+                          converter_webp=True)
+
+    assert r.already_optimized is True
+    assert r.formato_saida is Formato.PNG
+    assert r.dst.read_bytes() == b"x"
+    assert r.hit_target is True   # o original (1 byte) cabe nos 10 MB pedidos
+
+
+@pytest.mark.integration
+def test_foto_com_conversao_e_alvo_padrao_reduz_de_verdade(tmp_path):
+    """O cenário que motivou o limite: JPEG, alvo folgado (o padrão de 10 MB
+    da interface), conversão ligada. Sem o limite o degrau 0 (lossless, muito
+    maior que a foto) vencia e o original voltava, com 0% de economia."""
+    src = tmp_path / "foto.jpg"
+    _textura((640, 480)).save(src, "JPEG", quality=95)
+    original = src.stat().st_size
+
+    r = compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert r.already_optimized is False
+    assert r.formato_saida is Formato.WEBP and r.dst.suffix == ".webp"
+    assert r.hit_target is True
+    assert r.final_bytes < original * 0.8, (r.final_bytes, original)
+    assert r.params != formato_webp.TABELA[0]
+
+
+@pytest.mark.integration
+def test_webp_com_alvo_folgado_e_sem_conversao_reduz_de_verdade(tmp_path):
+    """Mesma forma, sem conversão: um WebP com perda de entrada também tem o
+    degrau 0 (lossless) maior que ele."""
+    src = tmp_path / "foto.webp"
+    _textura((640, 480)).save(src, "WEBP", quality=95)
+    original = src.stat().st_size
+
+    r = compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS)
+
+    assert r.already_optimized is False
+    assert r.formato_saida is Formato.WEBP
+    assert r.hit_target is True
+    assert r.final_bytes < original * 0.8, (r.final_bytes, original)
+    assert r.params != formato_webp.TABELA[0]

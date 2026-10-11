@@ -96,6 +96,13 @@ def compress_file(
     modulo = formatos.para(saida)
     toggles = formatos.toggles_efetivos(saida, toggles, tools)
     escada = aplicar_toggles(modulo.TABELA, info, toggles, modulo.NEUTROS)
+    # Um alvo >= à entrada não é restrição: pede-se "menor", não "qualquer
+    # coisa abaixo de 10 MB". Sem este limite um degrau de alta qualidade
+    # MAIOR que a entrada (o sem perda do WebP numa foto) caberia no alvo,
+    # venceria por ser o de maior qualidade, e `already_optimized` devolveria
+    # o original apesar de um degrau menor já ter sido medido. O limite é só
+    # da busca: `hit_target` continua sendo contra o alvo do usuário.
+    alvo_da_busca = max(0, min(target_bytes, info.size_bytes - 1))
 
     tmpdir = Path(tempfile.mkdtemp(prefix="gifc_"))
     try:
@@ -119,7 +126,7 @@ def compress_file(
             raise RungFailed(str(ultimo_erro))
 
         resultado = find_best(
-            escada, target_bytes, encode_fn,
+            escada, alvo_da_busca, encode_fn,
             on_progress=on_progress, should_cancel=should_cancel,
         )
 
@@ -156,7 +163,10 @@ def compress_file(
             original_bytes=info.size_bytes,
             final_bytes=dst.stat().st_size,
             params=resultado.params,
-            hit_target=resultado.hit_target,
+            # Aqui o resultado é menor que a entrada, logo `alvo_da_busca` e o
+            # alvo do usuário só divergem a favor dele: acertar um implica o
+            # outro. Mesmo assim mede-se contra o alvo do usuário.
+            hit_target=resultado.size_bytes <= target_bytes,
             already_optimized=False,
             formato_entrada=info.formato,
             formato_saida=saida,
