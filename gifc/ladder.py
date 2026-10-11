@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from gifc.probe import GifInfo
+from gifc.probe import ImagemInfo
 
 LARGURA_MINIMA = 16
 
@@ -71,7 +71,7 @@ def target_width(width: int, scale_pct: int) -> int:
     return max(LARGURA_MINIMA, par)
 
 
-def build(info: GifInfo, toggles: Toggles) -> list[Params]:
+def build(info: ImagemInfo, toggles: Toggles) -> list[Params]:
     """Monta a escada aplicando os toggles e removendo degraus repetidos."""
     escada: list[Params] = []
     vistos: set[Params] = set()

@@ -1,23 +1,36 @@
-"""Leitura de metadados de um GIF via ffprobe."""
+"""Leitura de metadados de uma imagem (GIF, PNG, JPEG ou WebP).
+
+O formato é identificado pelo conteúdo, nunca pela extensão: usuários
+renomeiam arquivos, e uma foto chamada `foto.png` tem de ser tratada pelo
+que ela é. GIF passa pelo `gifmeta` (bytes puros); os demais, pelo Pillow.
+"""
 
 from __future__ import annotations
 
-import json
-import subprocess
 from dataclasses import dataclass
-from fractions import Fraction
+from enum import StrEnum
 from pathlib import Path
 
-from gifc.tools import Tools
+from PIL import Image
+
+from gifc import gifmeta
 
 
 class ProbeError(Exception):
-    """O arquivo não pôde ser lido como um GIF válido."""
+    """O arquivo não pôde ser lido como uma imagem suportada."""
+
+
+class Formato(StrEnum):
+    GIF = "gif"
+    PNG = "png"
+    JPEG = "jpeg"
+    WEBP = "webp"
 
 
 @dataclass(frozen=True)
-class GifInfo:
+class ImagemInfo:
     path: Path
+    formato: Formato
     width: int
     height: int
     fps: float
@@ -27,76 +40,95 @@ class GifInfo:
 
 
 FPS_PADRAO = 10.0
-"""Convenção usual de navegadores para GIFs com atraso zero entre quadros
-(avg_frame_rate '0/0' ou similar). É um valor de reserva, não um dado
-medido a partir do arquivo."""
+"""Convenção usual de navegadores para GIFs com atraso zero entre quadros.
+É um valor de reserva, não um dado medido a partir do arquivo. Formatos
+estáticos o usam também, junto de `frame_count = 1` e `duration = 0.0`: são
+os mesmos valores neutros que um GIF de quadro único já produz."""
+
+_TAMANHO_CABECALHO = 12  # o suficiente para "RIFF" + tamanho + "WEBP"
+
+# Nome que o Pillow dá a cada formato; restringe o Pillow ao formato que a
+# assinatura já identificou, para os dois nunca divergirem.
+_NOME_PILLOW = {Formato.PNG: "PNG", Formato.JPEG: "JPEG", Formato.WEBP: "WEBP"}
+
+_ROTULO = {Formato.PNG: "PNG", Formato.WEBP: "WebP"}
 
 
-def _parse_fps(valor: str) -> tuple[float, bool]:
-    """Converte '25/1' num float utilizável.
+def _detectar(cabecalho: bytes) -> Formato | None:
+    """Identifica o formato pela assinatura; None se não for nenhum suportado."""
+    if cabecalho[:6] in (b"GIF87a", b"GIF89a"):
+        return Formato.GIF
+    if cabecalho[:8] == b"\x89PNG\r\n\x1a\n":
+        return Formato.PNG
+    if cabecalho[:3] == b"\xff\xd8\xff":
+        return Formato.JPEG
+    if cabecalho[:4] == b"RIFF" and cabecalho[8:12] == b"WEBP":
+        return Formato.WEBP
+    return None
 
-    Devolve `(fps, medido)`: `medido` é True quando o valor veio de fato
-    do arquivo, e False quando não foi possível interpretá-lo ou ele não
-    é positivo (ex.: '0/0'), caso em que `fps` é FPS_PADRAO — uma
-    convenção, não uma medição.
-    """
+
+def _info_gif(path: Path, dados: bytes) -> ImagemInfo:
     try:
-        f = float(Fraction(valor))
-    except (ValueError, ZeroDivisionError):
-        return FPS_PADRAO, False
-    if f > 0:
-        return f, True
-    return FPS_PADRAO, False
+        bruto = gifmeta.parse(dados)
+    except gifmeta.GifMetaError as exc:
+        raise ProbeError(f"{path.name} não é um GIF legível: {exc}") from exc
+
+    duracao = bruto.total_delay_cs / 100
+    # Soma de delays zero: o arquivo não informa a velocidade. fps cai para o
+    # padrão e a duração fica 0.0 — "não sei" honesto, sem número inventado.
+    fps = bruto.frame_count / duracao if duracao > 0 else FPS_PADRAO
+    return ImagemInfo(
+        path=path, formato=Formato.GIF,
+        width=bruto.width, height=bruto.height,
+        fps=fps, frame_count=bruto.frame_count, duration=duracao,
+        size_bytes=len(dados),
+    )
 
 
-def probe(path: Path, tools: Tools) -> GifInfo:
-    """Lê os metadados do GIF. Levanta ProbeError se não for um GIF válido."""
+def _info_estatica(path: Path, formato: Formato) -> ImagemInfo:
+    try:
+        with Image.open(path, formats=[_NOME_PILLOW[formato]]) as img:
+            largura, altura = img.size
+            # JPEG fica de fora de propósito: fotos de celular são MPO (várias
+            # imagens num JPEG) e o Pillow reporta n_frames > 1 nelas, sem
+            # que haja animação.
+            animado = formato is not Formato.JPEG and getattr(img, "n_frames", 1) > 1
+    except Exception as exc:  # o Pillow falha de formas demais para listar
+        raise ProbeError(
+            f"{path.name} parece um {formato.name} mas não pôde ser lido: {exc}"
+        ) from exc
+
+    if animado:
+        raise ProbeError(
+            f"{path.name}: {_ROTULO[formato]} animado não é suportado "
+            "(só o primeiro quadro seria comprimido e a animação se perderia)."
+        )
+    return ImagemInfo(
+        path=path, formato=formato, width=largura, height=altura,
+        fps=FPS_PADRAO, frame_count=1, duration=0.0,
+        size_bytes=path.stat().st_size,
+    )
+
+
+def probe(path: Path) -> ImagemInfo:
+    """Lê os metadados da imagem. Levanta ProbeError se não for suportada."""
     path = Path(path)
     if not path.is_file():
         raise ProbeError(f"Arquivo não encontrado: {path}")
 
-    cmd = [
-        tools.ffprobe, "-v", "error",
-        "-select_streams", "v:0",
-        "-count_frames",
-        "-show_entries",
-        "stream=width,height,avg_frame_rate,nb_read_frames,duration",
-        "-show_entries", "format=format_name,duration",
-        "-print_format", "json",
-        str(path),
-    ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        with path.open("rb") as f:
+            cabecalho = f.read(_TAMANHO_CABECALHO)
+            formato = _detectar(cabecalho)
+            dados = cabecalho + f.read() if formato is Formato.GIF else b""
     except OSError as exc:
-        raise ProbeError(f"Falha ao executar ffprobe: {exc}") from exc
+        raise ProbeError(f"Não foi possível ler {path.name}: {exc}") from exc
 
-    if proc.returncode != 0:
-        raise ProbeError(f"ffprobe falhou em {path.name}: {proc.stderr.strip()}")
-
-    try:
-        dados = json.loads(proc.stdout)
-        stream = dados["streams"][0]
-    except (json.JSONDecodeError, KeyError, IndexError) as exc:
-        raise ProbeError(f"{path.name} não contém um fluxo de vídeo.") from exc
-
-    formato = dados.get("format", {}).get("format_name", "")
-    if "gif" not in formato:
-        raise ProbeError(f"{path.name} não é um GIF (formato: {formato}).")
-
-    fps, fps_medido = _parse_fps(stream.get("avg_frame_rate", "0/0"))
-    frame_count = int(stream.get("nb_read_frames") or 0)
-    duracao = float(
-        stream.get("duration") or dados.get("format", {}).get("duration") or 0.0
-    )
-    if duracao <= 0 and frame_count and fps_medido:
-        duracao = frame_count / fps
-
-    return GifInfo(
-        path=path,
-        width=int(stream["width"]),
-        height=int(stream["height"]),
-        fps=fps,
-        frame_count=frame_count,
-        duration=duracao,
-        size_bytes=path.stat().st_size,
-    )
+    if formato is None:
+        raise ProbeError(
+            f"{path.name}: formato não reconhecido "
+            "(esperado GIF, PNG, JPEG ou WebP)."
+        )
+    if formato is Formato.GIF:
+        return _info_gif(path, dados)
+    return _info_estatica(path, formato)

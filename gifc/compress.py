@@ -71,7 +71,7 @@ def compress_file(
 ) -> CompressResult:
     """Comprime `src` buscando o melhor resultado que cabe em `target_bytes`."""
     src = Path(src)
-    info = probe(src, tools)
+    info = probe(src)
 
     # Sem gifsicle não há estágio lossy: manter a coluna ligada só geraria
     # degraus que produzem exatamente o mesmo arquivo, desperdiçando encodes.

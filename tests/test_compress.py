@@ -5,7 +5,7 @@ import pytest
 from gifc.compress import CompressResult, compress_file, unique_output_path
 from gifc.encode import EncodeError
 from gifc.ladder import Toggles
-from gifc.probe import GifInfo
+from gifc.probe import Formato, ImagemInfo
 from gifc.tools import Tools
 
 TODOS = Toggles(True, True, True, True)
@@ -17,11 +17,11 @@ def _preparar(tmp_path, monkeypatch, gifsicle="gifsicle"):
 
     src = tmp_path / "a.gif"
     src.write_bytes(b"GIF89a" + b"x" * 5_000)
-    info = GifInfo(
-        path=src, width=100, height=100, fps=30.0,
+    info = ImagemInfo(
+        path=src, formato=Formato.GIF, width=100, height=100, fps=30.0,
         frame_count=30, duration=1.0, size_bytes=src.stat().st_size,
     )
-    monkeypatch.setattr(mod, "probe", lambda p, t: info)
+    monkeypatch.setattr(mod, "probe", lambda p: info)
     return mod, src, info, Tools("ffmpeg", "ffprobe", gifsicle)
 
 

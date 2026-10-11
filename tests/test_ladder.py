@@ -5,12 +5,12 @@ from typing import Sequence
 import pytest
 
 from gifc.ladder import BASE_LADDER, Params, Toggles, build, target_width
-from gifc.probe import GifInfo
+from gifc.probe import Formato, ImagemInfo
 
 
-def info(fps: float = 30.0, width: int = 800) -> GifInfo:
-    return GifInfo(
-        path=Path("x.gif"), width=width, height=600, fps=fps,
+def info(fps: float = 30.0, width: int = 800) -> ImagemInfo:
+    return ImagemInfo(
+        path=Path("x.gif"), formato=Formato.GIF, width=width, height=600, fps=fps,
         frame_count=100, duration=100 / fps, size_bytes=1_000_000,
     )
 

@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from gifc.ladder import Params, target_width
-from gifc.probe import GifInfo
+from gifc.probe import ImagemInfo
 from gifc.tools import Tools
 
 TIMEOUT_SEGUNDOS = 600
@@ -18,7 +18,7 @@ class EncodeError(Exception):
     """Um dos estágios de codificação falhou."""
 
 
-def build_filter(info: GifInfo, params: Params) -> str:
+def build_filter(info: ImagemInfo, params: Params) -> str:
     """Monta a cadeia de filtros do ffmpeg.
 
     Duas escolhas carregam a maior parte do ganho de compressão:
@@ -50,7 +50,7 @@ def build_filter(info: GifInfo, params: Params) -> str:
 
 
 def build_ffmpeg_cmd(
-    tools: Tools, src: Path, dst: Path, info: GifInfo, params: Params
+    tools: Tools, src: Path, dst: Path, info: ImagemInfo, params: Params
 ) -> list[str]:
     return [
         tools.ffmpeg, "-y", "-v", "error",
@@ -88,7 +88,7 @@ def _run(cmd: list[str], etapa: str) -> None:
 
 
 def encode(
-    src: Path, dst: Path, params: Params, info: GifInfo, tools: Tools
+    src: Path, dst: Path, params: Params, info: ImagemInfo, tools: Tools
 ) -> int:
     """Codifica `src` em `dst` com `params`. Devolve o tamanho de `dst`.
 

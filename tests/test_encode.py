@@ -12,15 +12,15 @@ from gifc.encode import (
     encode,
 )
 from gifc.ladder import Params
-from gifc.probe import GifInfo
+from gifc.probe import Formato, ImagemInfo
 from gifc.tools import Tools
 
 FERRAMENTAS = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", gifsicle="gifsicle")
 
 
-def info(fps: float = 30.0, width: int = 800) -> GifInfo:
-    return GifInfo(
-        path=Path("x.gif"), width=width, height=600, fps=fps,
+def info(fps: float = 30.0, width: int = 800) -> ImagemInfo:
+    return ImagemInfo(
+        path=Path("x.gif"), formato=Formato.GIF, width=width, height=600, fps=fps,
         frame_count=100, duration=100 / fps, size_bytes=1_000_000,
     )
 
@@ -156,7 +156,7 @@ def test_encode_modo_degradado_sem_gifsicle_usa_so_o_ffmpeg(tmp_path, monkeypatc
 def test_encode_produz_um_gif_valido(tools, gif_pequeno, tmp_path):
     from gifc.probe import probe
 
-    origem = probe(gif_pequeno, tools)
+    origem = probe(gif_pequeno)
     destino = tmp_path / "saida.gif"
     tamanho = encode(
         gif_pequeno, destino, Params(64, 80, 100, None), origem, tools
@@ -172,7 +172,7 @@ def test_encode_nao_altera_o_arquivo_de_origem(tools, gif_pequeno, tmp_path):
     from gifc.probe import probe
 
     antes = gif_pequeno.read_bytes()
-    origem = probe(gif_pequeno, tools)
+    origem = probe(gif_pequeno)
     encode(
         gif_pequeno, tmp_path / "saida.gif",
         Params(32, 100, 70, None), origem, tools,
