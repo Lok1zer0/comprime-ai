@@ -6,6 +6,7 @@ import pytest
 
 from gifc.formatos.base import EncodeError
 from gifc.formatos.gif import (
+    NEUTROS,
     SENTIDOS,
     TABELA,
     Params,
@@ -13,6 +14,7 @@ from gifc.formatos.gif import (
     build_filter,
     build_gifsicle_cmd,
     codificar,
+    toggles_efetivos,
 )
 from gifc.ladder import Toggles, aplicar_toggles
 from gifc.probe import Formato, ImagemInfo
@@ -201,7 +203,7 @@ TODOS = Toggles(palette=True, lossy=True, scale=True, fps=True)
 
 
 def build(info_: ImagemInfo, toggles: Toggles) -> list[Params]:
-    return aplicar_toggles(TABELA, info_, toggles)
+    return aplicar_toggles(TABELA, info_, toggles, NEUTROS)
 
 
 def test_escada_base_tem_20_degraus():
@@ -285,3 +287,35 @@ def test_dedup_preserva_a_ordem_original():
         Params(p.colors, p.lossy, 100, None)
     ) for p in escada if Params(p.colors, p.lossy, 100, None) in TABELA]
     assert indices == sorted(indices)
+
+
+def test_neutros_do_gif():
+    """Os valores que as alavancas desligadas fixam: nada de paleta reduzida,
+    lossy, escala ou fps reduzido."""
+    assert NEUTROS == {"colors": 256, "lossy": 0, "scale_pct": 100, "fps": None}
+
+
+def test_neutros_do_gif_sao_o_primeiro_degrau():
+    """O degrau 0 é o menos agressivo em todas as colunas."""
+    degrau_0 = TABELA[0]
+    assert {c: getattr(degrau_0, c) for c in NEUTROS} == NEUTROS
+
+
+# ---------- toggles_efetivos (modo degradado sem gifsicle) ----------
+
+
+def test_sem_gifsicle_o_toggle_lossy_e_desligado():
+    sem_gifsicle = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", gifsicle=None)
+    assert toggles_efetivos(TODOS, sem_gifsicle) == Toggles(True, False, True, True)
+
+
+def test_com_gifsicle_os_toggles_passam_inalterados():
+    assert toggles_efetivos(TODOS, FERRAMENTAS) == TODOS
+    desligado = Toggles(False, False, True, False)
+    assert toggles_efetivos(desligado, FERRAMENTAS) == desligado
+
+
+def test_sem_gifsicle_preserva_os_outros_toggles():
+    sem_gifsicle = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", gifsicle=None)
+    entrada = Toggles(False, True, False, True)
+    assert toggles_efetivos(entrada, sem_gifsicle) == Toggles(False, False, False, True)

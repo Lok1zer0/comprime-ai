@@ -8,7 +8,7 @@ Não faz I/O. Tudo aqui é função pura, testável sem ffmpeg.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, replace
 from typing import TypeVar
 
@@ -29,15 +29,16 @@ class Toggles:
     fps: bool = True
 
 
-# Para cada toggle: a coluna de `Params` que ele controla e o valor NEUTRO
-# dela (o que a coluna vale quando a alavanca está desligada). Um formato
-# cujo `Params` não tenha a coluna simplesmente não é afetado pelo toggle.
-_ALAVANCAS: tuple[tuple[str, str, object], ...] = (
-    ("palette", "colors", 256),
-    ("lossy", "lossy", 0),
-    ("scale", "scale_pct", 100),
-    ("fps", "fps", None),
-)
+# Para cada toggle, a coluna de `Params` que ele controla. Quanto vale a
+# coluna quando a alavanca está DESLIGADA é decisão de cada formato (o seu
+# `NEUTROS`): "sem paleta" é 256 cores num GIF, mas "não quantizar" num PNG.
+# Um formato cujo `Params` não tenha a coluna simplesmente não é afetado.
+ALAVANCAS: dict[str, str] = {
+    "palette": "colors",
+    "lossy": "lossy",
+    "scale": "scale_pct",
+    "fps": "fps",
+}
 
 
 def target_width(width: int, scale_pct: int) -> int:
@@ -48,23 +49,38 @@ def target_width(width: int, scale_pct: int) -> int:
 
 
 def aplicar_toggles(
-    tabela: Sequence[P], info: ImagemInfo, toggles: Toggles
+    tabela: Sequence[P],
+    info: ImagemInfo,
+    toggles: Toggles,
+    neutros: Mapping[str, object],
 ) -> list[P]:
     """Aplica os toggles a uma tabela de degraus e remove os repetidos.
 
     Funciona sobre o `Params` de qualquer formato: só toca as colunas que
-    ele realmente tem (consultadas por `dataclasses.fields`). A ordem da
-    tabela é preservada; de cada grupo de degraus iguais fica o primeiro.
+    ele realmente tem (consultadas por `dataclasses.fields`). `neutros` é o
+    `NEUTROS` do formato: o valor menos agressivo de cada coluna, usado
+    quando o toggle dela está desligado. A ordem da tabela é preservada; de
+    cada grupo de degraus iguais fica o primeiro.
     """
     escada: list[P] = []
     vistos: set[P] = set()
 
     for base in tabela:
         colunas = {f.name for f in fields(base)}  # type: ignore[arg-type]
+        controladas = {
+            toggle: coluna for toggle, coluna in ALAVANCAS.items()
+            if coluna in colunas
+        }
+        sem_neutro = sorted(c for c in controladas.values() if c not in neutros)
+        if sem_neutro:
+            raise ValueError(
+                f"O formato não declara o valor neutro de: {', '.join(sem_neutro)}."
+            )
+
         p = base
-        for toggle, coluna, neutro in _ALAVANCAS:
-            if coluna in colunas and not getattr(toggles, toggle):
-                p = replace(p, **{coluna: neutro})  # type: ignore[type-var]
+        for toggle, coluna in controladas.items():
+            if not getattr(toggles, toggle):
+                p = replace(p, **{coluna: neutros[coluna]})  # type: ignore[type-var]
 
         # Nunca aumentar o framerate: um alvo >= ao original é o original.
         if "fps" in colunas:

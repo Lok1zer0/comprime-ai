@@ -35,7 +35,7 @@ from gifc.tools import (
 MB = 1024 * 1024
 PRESETS = [("Discord 10", 10.0), ("WhatsApp 16", 16.0), ("5", 5.0), ("2", 2.0)]
 
-# A busca é binária sobre a escada de 20 degraus (gifc/ladder.py), então o
+# A busca é binária sobre a escada de 20 degraus (gifc/formatos/gif.py), então o
 # pior caso é floor(log2(20)) + 1 = 5 tentativas por arquivo. Usado só para
 # estimar o progresso do lote de forma honesta — não afeta a busca em si.
 TENTATIVAS_ESPERADAS_POR_ARQUIVO = 5

@@ -5,11 +5,11 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from gifc.formatos.base import EncodeError
-from gifc.ladder import target_width
+from gifc.ladder import Toggles, target_width
 from gifc.probe import ImagemInfo
 from gifc.tools import Tools
 
@@ -64,6 +64,23 @@ SENTIDOS: dict[str, str] = {
     "scale_pct": "menor",
     "fps": "menor",
 }
+
+# O valor MENOS agressivo de cada coluna: o que ela assume quando o usuário
+# desliga a alavanca correspondente.
+NEUTROS: dict[str, object] = {
+    "colors": 256,
+    "lossy": 0,
+    "scale_pct": 100,
+    "fps": None,
+}
+
+
+def toggles_efetivos(toggles: Toggles, tools: Tools) -> Toggles:
+    """Sem gifsicle não há estágio lossy: manter a coluna ligada só geraria
+    degraus que produzem exatamente o mesmo arquivo, desperdiçando encodes."""
+    if tools.gifsicle is None:
+        return replace(toggles, lossy=False)
+    return toggles
 
 
 def build_filter(info: ImagemInfo, params: Params) -> str:

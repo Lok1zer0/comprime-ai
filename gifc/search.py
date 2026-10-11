@@ -12,10 +12,10 @@ from typing import Generic, TypeVar
 
 # Tipo dos parâmetros de um degrau. A busca não olha dentro deles: só os
 # repassa ao codificador, então vale para o `Params` de qualquer formato.
-Params = TypeVar("Params")
+P = TypeVar("P")
 
-EncodeFn = Callable[[int, Params], int]
-ProgressFn = Callable[["Attempt[Params]", int], None]
+EncodeFn = Callable[[int, P], int]
+ProgressFn = Callable[["Attempt[P]", int], None]
 CancelFn = Callable[[], bool]
 
 # Sentinela de tamanho para um degrau que falhou: a busca o trata como
@@ -37,29 +37,29 @@ class RungFailed(Exception):
 
 
 @dataclass(frozen=True)
-class Attempt(Generic[Params]):
+class Attempt(Generic[P]):
     index: int
-    params: Params
+    params: P
     size_bytes: int
     erro: str | None = None
 
 
 @dataclass
-class SearchResult(Generic[Params]):
+class SearchResult(Generic[P]):
     index: int
-    params: Params
+    params: P
     size_bytes: int
     hit_target: bool
-    attempts: list[Attempt[Params]] = field(default_factory=list)
+    attempts: list[Attempt[P]] = field(default_factory=list)
 
 
 def find_best(
-    ladder: Sequence[Params],
+    ladder: Sequence[P],
     target_bytes: int,
-    encode_fn: EncodeFn[Params],
-    on_progress: ProgressFn[Params] | None = None,
+    encode_fn: EncodeFn[P],
+    on_progress: ProgressFn[P] | None = None,
     should_cancel: CancelFn | None = None,
-) -> SearchResult[Params]:
+) -> SearchResult[P]:
     """Acha o degrau de MAIOR qualidade cujo resultado cabe no alvo.
 
     A escada garante que cada degrau é fracamente mais agressivo que o
@@ -77,10 +77,10 @@ def find_best(
         raise ValueError("A escada de qualidade está vazia.")
 
     total = len(ladder)
-    attempts: list[Attempt[Params]] = []
+    attempts: list[Attempt[P]] = []
 
-    melhor_valido: Attempt[Params] | None = None
-    menor_absoluto: Attempt[Params] | None = None
+    melhor_valido: Attempt[P] | None = None
+    menor_absoluto: Attempt[P] | None = None
 
     lo, hi = 0, total - 1
     while lo <= hi:

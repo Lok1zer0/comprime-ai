@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -12,7 +11,7 @@ from typing import Any
 from gifc import formatos
 from gifc.formatos.base import EncodeError
 from gifc.ladder import Toggles, aplicar_toggles
-from gifc.probe import probe
+from gifc.probe import Formato, probe
 from gifc.search import FALHOU, Attempt, CancelFn, ProgressFn, RungFailed, find_best
 from gifc.tools import Tools
 
@@ -54,13 +53,15 @@ def unique_output_path(src: Path) -> Path:
         n += 1
 
 
-def _try_path(tmpdir: Path, index: int) -> Path:
+def _try_path(tmpdir: Path, index: int, formato: Formato) -> Path:
     """Caminho do arquivo intermediário de um degrau dentro do tmpdir.
 
-    Único lugar que sabe a convenção `try_{index}.gif` — usado tanto ao
-    codificar quanto ao localizar o vencedor depois da busca.
+    Único lugar que sabe a convenção `try_{index}{extensão}` — usado tanto ao
+    codificar quanto ao localizar o vencedor depois da busca. A extensão
+    segue o formato de entrada (nada converte formato ainda) porque o Pillow
+    escolhe o formato de saída por ela.
     """
-    return tmpdir / f"try_{index}.gif"
+    return tmpdir / f"try_{index}{formatos.extensao(formato)}"
 
 
 def compress_file(
@@ -75,13 +76,9 @@ def compress_file(
     src = Path(src)
     info = probe(src)
 
-    # Sem gifsicle não há estágio lossy: manter a coluna ligada só geraria
-    # degraus que produzem exatamente o mesmo arquivo, desperdiçando encodes.
-    if tools.gifsicle is None:
-        toggles = dataclasses.replace(toggles, lossy=False)
-
     modulo = formatos.para(info.formato)
-    escada = aplicar_toggles(modulo.TABELA, info, toggles)
+    toggles = formatos.toggles_efetivos(info.formato, toggles, tools)
+    escada = aplicar_toggles(modulo.TABELA, info, toggles, modulo.NEUTROS)
     dst = unique_output_path(src)
 
     tmpdir = Path(tempfile.mkdtemp(prefix="gifc_"))
@@ -97,7 +94,8 @@ def compress_file(
             for _tentativa in range(2):
                 try:
                     return modulo.codificar(
-                        src, _try_path(tmpdir, index), params, info, tools
+                        src, _try_path(tmpdir, index, info.formato),
+                        params, info, tools,
                     )
                 except EncodeError as exc:
                     ultimo_erro = exc
@@ -115,7 +113,7 @@ def compress_file(
                 f"O arquivo pode estar corrompido."
             )
 
-        vencedor = _try_path(tmpdir, resultado.index)
+        vencedor = _try_path(tmpdir, resultado.index, info.formato)
 
         # GIFs já muito otimizados podem crescer ao serem reescritos.
         if resultado.size_bytes >= info.size_bytes:
