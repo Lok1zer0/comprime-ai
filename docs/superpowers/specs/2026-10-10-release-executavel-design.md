@@ -118,18 +118,29 @@ Medição real, PNG de 1280×800, `optimize=True` em todos os casos:
 | Entrada | 256 cores | 64 cores | 32 cores |
 |---|---|---|---|
 | Interface / captura de tela | **−59%** | −66% | −69% |
-| Foto / gradiente suave | **+26%** | −40% | −57% |
+| Gradiente **linear** | **+26%** | −40% | −57% |
+| Gradiente **radial** | **−60%** | — | — |
+
+> **Correção.** A primeira versão desta spec chamava a linha do meio de "foto /
+> gradiente suave" e concluía que "PNG fotográfico fica maior". Isso foi uma
+> generalização indevida de um único fixture. Medindo de novo: o crescimento de
+> +26% acontece com gradiente **linear**, que os filtros de linha do PNG
+> predizem quase perfeitamente — a paleta mais os índices custam mais do que o
+> filtro já economizava. Um gradiente radial da mesma dimensão **encolhe 60%**,
+> e uma fotografia real, sendo ruidosa, se parece muito mais com o caso radial.
+> Então: para fotos de verdade a quantização normalmente reduz.
 
 Duas consequências de desenho:
 
 **PNG de interface é o caso que importa e comprime muito bem** — 59% já na
 redução mais conservadora.
 
-**PNG fotográfico fica maior com paleta de 256 cores.** O custo da tabela
-supera o ganho em gradiente suave. Isso não é um caso hipotético, é o
-comportamento normal, e é por isso que o degrau 0 da escada de PNG **não
-quantiza nada** — é só `oxipng`, sem perda. Para PNG fotográfico a resposta
-certa é a conversão para WebP, não a quantização.
+**Um degrau pode produzir arquivo maior que a entrada.** Em imagens muito
+suaves e previsíveis, o custo da paleta e dos índices supera o que os filtros
+de linha já economizavam. Não é o caso comum — é o caso que existe — e é
+por isso que o degrau 0 da escada de PNG **não quantiza nada**: é só
+`oxipng`, sem perda, garantindo um piso. Para PNG fotográfico pesado, a
+conversão para WebP tende a render mais que a quantização.
 
 A engine já trata isso corretamente: `menor_absoluto` garante que um degrau
 que aumentou o arquivo não piore o resultado, e `already_optimized` devolve o
@@ -439,7 +450,7 @@ projeto.
 1. `python -m pytest` verde, com o xfail deliberado ainda xfail
 2. O app empacotado comprime os quatro formatos sem ffmpeg no PATH
 3. O executável abre sem crash
-4. PNG de interface comprime acima de 50%; PNG fotográfico nunca sai maior
+4. PNG de interface comprime acima de 50%; nenhum PNG sai maior que a entrada
 5. Release publicada com asset, notas, `LICENSE` e `THIRD-PARTY-LICENSES.md`
 6. README começa pelo caminho do leigo, SmartScreen antes do link
 7. Tamanho do pacote e tempo de abertura registrados na release — medidos,
