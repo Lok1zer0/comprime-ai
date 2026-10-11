@@ -93,6 +93,10 @@ def _info_estatica(path: Path, formato: Formato) -> ImagemInfo:
             # imagens num JPEG) e o Pillow reporta n_frames > 1 nelas, sem
             # que haja animação.
             animado = formato is not Formato.JPEG and getattr(img, "n_frames", 1) > 1
+        # O stat fica dentro do try junto com a leitura: se o arquivo
+        # desaparecer entre abrir e medir, o erro sai como ProbeError como
+        # todo o resto desta função, em vez de um OSError cru.
+        tamanho = path.stat().st_size
     except Exception as exc:  # o Pillow falha de formas demais para listar
         raise ProbeError(
             f"{path.name} parece um {formato.name} mas não pôde ser lido: {exc}"
@@ -106,7 +110,7 @@ def _info_estatica(path: Path, formato: Formato) -> ImagemInfo:
     return ImagemInfo(
         path=path, formato=formato, width=largura, height=altura,
         fps=FPS_PADRAO, frame_count=1, duration=0.0,
-        size_bytes=path.stat().st_size,
+        size_bytes=tamanho,
     )
 
 
