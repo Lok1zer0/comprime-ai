@@ -217,19 +217,43 @@ subamostragem da fonte, o degrau 0 fica em ~74%, e uma fonte 4:4:4 preserva
 
 | # | Qualidade | Escala |
 |---|---|---|
-| 0 | 90 | 100% |
-| 1 | 85 | 100% |
-| 2 | 80 | 100% |
-| 3 | 75 | 100% |
-| 4 | 70 | 100% |
-| 5 | 65 | 100% |
-| 6 | 60 | 85% |
-| 7 | 55 | 85% |
-| 8 | 50 | 70% |
-| 9 | 45 | 50% |
+| 0 | **sem perda** | 100% |
+| 1 | 90 | 100% |
+| 2 | 85 | 100% |
+| 3 | 80 | 100% |
+| 4 | 75 | 100% |
+| 5 | 70 | 100% |
+| 6 | 65 | 100% |
+| 7 | 60 | 85% |
+| 8 | 55 | 85% |
+| 9 | 50 | 70% |
+| 10 | 45 | 50% |
 
 `method=6` fixo em todos: é o ajuste mais lento e que comprime melhor, e é um
 botão de tempo, não de qualidade. Não entra na escada.
+
+**O degrau 0 é sem perda**, e não existia na primeira versão desta spec. Essa
+escada era toda com perda, o que fazia a conversão de arte chapada *dobrar* o
+arquivo — enquanto o usuário tinha pedido a conversão de propósito. Medido
+nesta máquina com `method=6`:
+
+| Entrada | PNG | WebP sem perda | WebP q90 |
+|---|---|---|---|
+| Logo RGBA chapado | 1.164 | **496 (43%)** | 2.262 (194%) |
+| Captura de tela | 2.640 | **232 (8,8%)** | 5.158 (195%) |
+| Foto ruidosa | 373 KB | 260 KB (70%) | **30,8 KB (8,3%)** |
+
+Ou seja: sem perda é dramaticamente melhor para arte chapada e dramaticamente
+pior para foto. Com os dois na mesma escada, a bisecção escolhe o certo para
+cada arquivo sem o usuário precisar saber da diferença.
+
+`quality = None` significa sem perda e é o extremo **menos** agressivo da
+coluna — o mesmo padrão que o PNG já usa com `cores = None`. É também o único
+degrau de todo o projeto onde igualdade de pixel é afirmável, e por isso tem
+teste que a afirma.
+
+Sem perda só em escala 100%: reduzir resolução já é perda, então um degrau
+"sem perda a 70%" seria contradição.
 
 ### GIF
 
