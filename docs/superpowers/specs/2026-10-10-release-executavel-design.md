@@ -101,7 +101,7 @@ parametrizado por formato.
 |---|---|
 | **GIF** | `ffmpeg` (palettegen/paletteuse) → `gifsicle -O3 --lossy` |
 | **PNG** | Pillow `quantize()` → `oxipng` |
-| **JPEG** | Pillow, reempacotamento com qualidade e subamostragem |
+| **JPEG** | Pillow, reempacotamento com qualidade e subamostragem; EXIF e ICC preservados, CMYK segue CMYK |
 | **WebP** | Pillow, `quality` com `method=6` |
 
 O PNG espelha a forma do GIF de propósito: um passo com perda que reduz
@@ -181,8 +181,8 @@ Degraus 0 e 1 são **sem perda**: só recompressão. `cores = None` significa
 
 | # | Qualidade | Subamostragem | Escala |
 |---|---|---|---|
-| 0 | 92 | 4:4:4 | 100% |
-| 1 | 88 | 4:4:4 | 100% |
+| 0 | 92 | igual à fonte | 100% |
+| 1 | 88 | igual à fonte | 100% |
 | 2 | 85 | 4:2:0 | 100% |
 | 3 | 80 | 4:2:0 | 100% |
 | 4 | 75 | 4:2:0 | 100% |
@@ -196,6 +196,22 @@ Degraus 0 e 1 são **sem perda**: só recompressão. `cores = None` significa
 
 `progressive=True` em todos os degraus: economiza alguns por cento sem custo
 de qualidade, então não é uma alavanca, é um padrão.
+
+**Os degraus 0 e 1 mantêm a subamostragem da fonte**, em vez de forçar 4:4:4
+como dizia a primeira versão desta spec. Medido: num JPEG de câmera (q95,
+4:2:0), o degrau 0 forçando 4:4:4 saía a **96,7% do original** — quase nada,
+porque 4:4:4 devolve resolução de cor que a fonte nunca teve. Mantendo a
+subamostragem da fonte, o degrau 0 fica em ~74%, e uma fonte 4:4:4 preserva
+4:4:4 até o degrau 2.
+
+> **Cuidado com o `-1`.** No `Params` o valor `-1` é *nosso* e significa
+> "igual à fonte"; ele é resolvido lendo a fonte aberta com
+> `JpegImagePlugin.get_sampling`. **Nunca repasse `-1` ao Pillow**, onde ele
+> é o padrão do libjpeg e vale 4:2:0 — verificado byte a byte. E `"keep"` não
+> serve: o Pillow o recusa quando a imagem a gravar é uma cópia, o que é
+> sempre o caso depois de `exif_transpose` ou `resize`. Passar `-1` adiante
+> degradaria em silêncio toda fonte 4:4:4 justamente no degrau mais
+> conservador.
 
 ### WebP — Pillow
 
