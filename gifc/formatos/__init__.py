@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from gifc.formatos import gif, jpeg, png
+from gifc.formatos import gif, jpeg, png, webp
 from gifc.formatos.base import EncodeError, ModuloFormato
 from gifc.ladder import Toggles
 from gifc.probe import Formato
@@ -12,6 +12,7 @@ _REGISTRO: dict[Formato, ModuloFormato] = {
     Formato.GIF: gif,
     Formato.PNG: png,
     Formato.JPEG: jpeg,
+    Formato.WEBP: webp,
 }
 
 # Extensão do arquivo de cada formato, declarada à mão: `Formato.JPEG.value`
@@ -25,14 +26,26 @@ _EXTENSAO: dict[Formato, str] = {
 }
 
 __all__ = [
-    "EncodeError", "ModuloFormato", "extensao", "para", "registrados",
-    "toggles_efetivos",
+    "EncodeError", "ModuloFormato", "extensao", "formato_de_saida", "para",
+    "registrados", "toggles_efetivos",
 ]
 
 
 def extensao(formato: Formato) -> str:
     """A extensão (com ponto) dos arquivos de `formato`."""
     return _EXTENSAO[formato]
+
+
+def formato_de_saida(entrada: Formato, converter_webp: bool) -> Formato:
+    """O formato do arquivo que a compressão de `entrada` produz.
+
+    Com a conversão ligada, PNG e JPEG viram WebP. GIF NUNCA converte:
+    converter animação é outro problema e está fora de escopo. WebP segue
+    WebP.
+    """
+    if converter_webp and entrada in (Formato.PNG, Formato.JPEG):
+        return Formato.WEBP
+    return entrada
 
 
 def toggles_efetivos(formato: Formato, toggles: Toggles, tools: Tools) -> Toggles:
