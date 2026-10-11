@@ -128,8 +128,6 @@ def test_encode_modo_degradado_sem_gifsicle_usa_so_o_ffmpeg(tmp_path, monkeypatc
     destino passado no comando (o último elemento de `build_ffmpeg_cmd`),
     para não depender de um ffmpeg real instalado.
     """
-    import gifc.formatos.gif as encode_mod
-
     chamadas: list[list[str]] = []
 
     def fake_run(cmd, capture_output, text, timeout):

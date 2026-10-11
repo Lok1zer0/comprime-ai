@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image, ImageChops, ImageCms, ImageDraw
 
 from gifc import formatos
 from gifc.compress import compress_file
@@ -67,14 +67,11 @@ def _png_de_interface(destino: Path) -> Path:
 
 
 def _png_gradiente_suave(destino: Path) -> Path:
-    """Gradiente suave de 64x64: o PNG original é minúsculo (resíduos quase
-    nulos nos filtros), então a tabela de 256 cores da paleta custa mais do
-    que o ganho. É o mecanismo que a spec descreve para fotos; aqui ele
-    aparece medido (+27% no degrau 2), de forma determinística.
-
-    Em 1280x800 o `quantize()` do Pillow (sem dithering) NÃO reproduz o
-    +26% da spec: o gradiente vira faixas planas e encolhe. O custo da
-    tabela só domina quando o arquivo é pequeno.
+    """Gradiente suave e previsível de 64x64: o PNG original é minúsculo
+    (resíduos quase nulos nos filtros), então a tabela de 256 cores da paleta
+    custa mais do que o ganho e o degrau 2 sai MAIOR que a entrada (+27%,
+    medido, determinístico). Vale para imagens muito suaves e previsíveis;
+    não para qualquer gradiente nem para fotografias reais.
     """
     w, h = 64, 64
     base = Image.linear_gradient("L").resize((w, h))
@@ -144,7 +141,7 @@ def test_sentidos_declarados_cobrem_todos_os_campos():
 
 def test_neutro_das_cores_e_nao_quantizar_e_nao_256():
     """O neutro da paleta é `None`: desligar a alavanca não pode quantizar,
-    senão a foto cresce 26% com o botão desligado."""
+    senão uma imagem suave e previsível cresce com o botão desligado."""
     assert NEUTROS["colors"] is None
     assert NEUTROS["scale_pct"] == 100
 
@@ -203,6 +200,89 @@ def test_oxipng_inexistente_vira_encodeerror_em_portugues(tmp_path):
         codificar(src, tmp_path / "out.png", TABELA[1], probe(src), tools)
 
 
+# --- escala, perfil de cor e alfa opaco (sem oxipng: testes de unidade) ---
+
+SEM_OXIPNG = Tools("ffmpeg", "ffprobe", None, oxipng=None)
+
+
+def _cores(img: Image.Image) -> int:
+    return len(img.convert("RGB").getcolors(maxcolors=1_000_000) or [])
+
+
+def _listras_em_paleta(destino: Path) -> Path:
+    """400x40 em modo P, listras verticais de 1px em três cores, período 3.
+    Um PNG já paletizado: o caso de capturas otimizadas por outra ferramenta
+    e da própria saída desta."""
+    img = Image.new("P", (400, 40))
+    img.putpalette([255, 0, 0, 0, 255, 0, 0, 0, 255] + [0] * 759)
+    for x in range(400):
+        img.paste(x % 3, (x, 0, x + 1, 40))
+    img.save(destino)
+    return destino
+
+
+def test_png_em_paleta_e_reduzido_com_antialiasing_e_nao_vizinho_mais_proximo(
+    tmp_path,
+):
+    """O Pillow IGNORA o filtro em modos P e 1 e usa vizinho mais próximo:
+    reduzir uma listrada em paleta daria só as 3 cores de origem, serrilhadas.
+    Com a conversão para RGB antes da escala, o LANCZOS mistura as listras e
+    sobram muito mais cores. Reverter a conversão faz este teste falhar."""
+    src = _listras_em_paleta(tmp_path / "listras.png")
+    with Image.open(src) as a:
+        assert a.mode == "P" and _cores(a) == 3
+
+    dst = tmp_path / "saida.png"
+    codificar(src, dst, TABELA[9], probe(src), SEM_OXIPNG)  # 16 cores, 50%
+
+    with Image.open(dst) as b:
+        assert b.width == target_width(400, 50)
+        assert _cores(b) > 3, "reduziu em vizinho mais próximo (sem antialiasing)"
+
+
+def _perfil_icc() -> bytes:
+    return ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+
+
+@pytest.mark.parametrize("indice", [2, 5, 9])
+def test_perfil_icc_sobrevive_aos_degraus_com_perda(tmp_path, indice):
+    """Sem o perfil, uma imagem de gamut largo muda de cor em silêncio."""
+    perfil = _perfil_icc()
+    src = tmp_path / "icc.png"
+    _png_de_interface(src)
+    with Image.open(src) as img:
+        img.load()
+        img.save(src, icc_profile=perfil)
+    with Image.open(src) as a:
+        assert a.info.get("icc_profile") == perfil  # pré-condição
+
+    dst = tmp_path / "saida.png"
+    codificar(src, dst, TABELA[indice], probe(src), SEM_OXIPNG)
+    with Image.open(dst) as b:
+        assert b.info.get("icc_profile") == perfil
+
+
+def test_rgba_totalmente_opaco_usa_o_corte_mediano(tmp_path):
+    """RGBA sem transparência real não precisa do FASTOCTREE (paleta pior):
+    o resultado tem de ser o mesmo do RGB quantizado por corte mediano."""
+    base = Image.open(_png_de_interface(tmp_path / "ui.png")).convert("RGBA")
+    src = tmp_path / "opaco.png"
+    base.save(src)
+    assert base.getchannel("A").getextrema() == (255, 255)
+
+    mediano = base.convert("RGB").quantize(
+        64, method=Image.Quantize.MEDIANCUT).convert("RGB")
+    octree = base.quantize(
+        64, method=Image.Quantize.FASTOCTREE).convert("RGB")
+    assert ImageChops.difference(mediano, octree).getbbox() is not None  # pré-cond.
+
+    dst = tmp_path / "saida.png"
+    codificar(src, dst, TABELA[4], probe(src), SEM_OXIPNG)  # 64 cores, 100%
+    with Image.open(dst) as b:
+        assert "transparency" not in b.info
+        assert ImageChops.difference(b.convert("RGB"), mediano).getbbox() is None
+
+
 # --- integração com o oxipng de verdade ------------------------------------
 
 
@@ -225,8 +305,8 @@ def test_png_de_interface_comprime_acima_de_cinquenta_por_cento(
 
 
 @pytest.mark.integration
-def test_png_fotografico_nunca_sai_maior_que_a_entrada(ferramentas, tmp_path):
-    src = _png_gradiente_suave(tmp_path / "foto.png")
+def test_png_nunca_sai_maior_que_a_entrada(ferramentas, tmp_path):
+    src = _png_gradiente_suave(tmp_path / "suave.png")
     original = src.stat().st_size
     info = probe(src)
 
@@ -273,6 +353,20 @@ def test_transparencia_e_preservada_ao_quantizar(ferramentas, tmp_path):
         assert 90 <= centro[3] <= 160, (
             f"degrau {indice}: semitransparência perdida ({centro})"
         )
+
+
+@pytest.mark.integration
+def test_oxipng_nao_descarta_o_perfil_icc(ferramentas, tmp_path):
+    perfil = _perfil_icc()
+    src = tmp_path / "icc.png"
+    _png_de_interface(src)
+    with Image.open(src) as img:
+        img.load()
+        img.save(src, icc_profile=perfil)
+    dst = tmp_path / "saida.png"
+    codificar(src, dst, TABELA[2], probe(src), ferramentas)
+    with Image.open(dst) as b:
+        assert b.info.get("icc_profile") == perfil
 
 
 @pytest.mark.integration

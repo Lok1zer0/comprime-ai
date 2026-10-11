@@ -2,8 +2,9 @@
 
 Espelha a forma do GIF: um estágio com perda que reduz a paleta, seguido de
 um otimizador sem perda. Os degraus 0 e 1 não quantizam nada — são só
-recompressão — porque uma foto quantizada a 256 cores sai MAIOR que a
-original (a tabela de cores custa mais do que o gradiente economiza).
+recompressão — porque, em imagens muito suaves e previsíveis, a tabela de
+256 cores custa mais do que a quantização economiza e o arquivo sai MAIOR
+que o original.
 """
 
 from __future__ import annotations
@@ -58,7 +59,8 @@ SENTIDOS: dict[str, str] = {
 
 # O valor MENOS agressivo de cada coluna controlada por toggle. As cores são
 # `None` (não quantizar), NÃO 256: desligar a paleta tem de deixar o arquivo
-# como está, e quantizar uma foto a 256 cores o faz crescer.
+# como está, e quantizar uma imagem muito suave e previsível a 256 cores a
+# faz crescer.
 NEUTROS: dict[str, object] = {
     "colors": None,
     "scale_pct": 100,
@@ -73,7 +75,7 @@ def build_oxipng_cmd(tools: Tools, alvo: Path, params: Params) -> list[str]:
     return [tools.oxipng, "-o", str(params.oxipng), "--quiet", str(alvo)]
 
 
-def _tem_alfa(img: Image.Image) -> bool:
+def _tem_canal_alfa(img: Image.Image) -> bool:
     """Alfa de canal, ou transparência de paleta/cor-chave (chunk tRNS)."""
     return "A" in img.getbands() or "transparency" in img.info
 
@@ -85,23 +87,38 @@ def _para_8_bits(img: Image.Image) -> Image.Image:
     return img
 
 
+def _para_rgb_ou_rgba(img: Image.Image) -> Image.Image:
+    """RGBA se há transparência de verdade; senão RGB.
+
+    Sai sempre de P, L e 1: o Pillow IGNORA o filtro de `resize` nesses modos
+    e usa vizinho mais próximo, o que serrilha toda imagem em paleta (capturas
+    já otimizadas, a saída desta própria ferramenta). Um RGBA que só carrega
+    um canal alfa 100% opaco (muitas ferramentas gravam assim) vira RGB, para
+    quantizar com o método melhor.
+    """
+    if _tem_canal_alfa(img):
+        rgba = img.convert("RGBA")
+        if rgba.getchannel("A").getextrema()[0] < 255:
+            return rgba
+        return rgba.convert("RGB")
+    return img.convert("RGB")
+
+
 def _quantizar(img: Image.Image, cores: int) -> Image.Image:
     """Reduz a paleta a `cores`, preservando o alfa quando há.
 
-    Com alfa, RGBA + `FASTOCTREE`: é o único método embutido que quantiza o
-    canal alfa junto (a paleta sai em modo RGBA e o PNG ganha o tRNS).
-    Quantizar depois de `convert("RGB")`, ou usar um método que não conhece
-    o alfa, devolve o fundo transparente como preto opaco — um defeito
-    silencioso, que passa por qualquer checagem de tamanho. Sem alfa, RGB +
-    corte mediano, que dá paleta melhor.
+    `img` vem de `_para_rgb_ou_rgba`. Com alfa (RGBA), `FASTOCTREE`: é o
+    único método embutido que quantiza o canal alfa junto (a paleta sai em
+    modo RGBA e o PNG ganha o tRNS). Quantizar depois de `convert("RGB")`, ou
+    usar um método que não conhece o alfa, devolve o fundo transparente como
+    preto opaco — um defeito silencioso, que passa por qualquer checagem de
+    tamanho. Sem alfa (RGB), corte mediano, que dá paleta melhor.
     """
-    if _tem_alfa(img):
-        return img.convert("RGBA").quantize(
-            colors=cores, method=Image.Quantize.FASTOCTREE
-        )
-    return img.convert("RGB").quantize(
-        colors=cores, method=Image.Quantize.MEDIANCUT
+    metodo = (
+        Image.Quantize.FASTOCTREE if img.mode == "RGBA"
+        else Image.Quantize.MEDIANCUT
     )
+    return img.quantize(colors=cores, method=metodo)
 
 
 def _escalar(img: Image.Image, info: ImagemInfo, scale_pct: int) -> Image.Image:
@@ -136,11 +153,15 @@ def codificar(
             shutil.copyfile(src, dst)
         else:
             with Image.open(src) as aberta:
-                img = _para_8_bits(aberta)
+                # `resize` e `quantize` não carregam todo o `info`; o perfil
+                # ICC sai de `aberta` e vai explícito ao `save`, senão uma
+                # imagem de gamut largo mudaria de cor em silêncio.
+                perfil = aberta.info.get("icc_profile")
+                img = _para_rgb_ou_rgba(_para_8_bits(aberta))
                 img = _escalar(img, info, params.scale_pct)
                 if params.colors is not None:
                     img = _quantizar(img, params.colors)
-                img.save(dst, format="PNG", optimize=True)
+                img.save(dst, format="PNG", optimize=True, icc_profile=perfil)
 
         if tools.oxipng is not None:
             executar(build_oxipng_cmd(tools, dst, params), "oxipng")
