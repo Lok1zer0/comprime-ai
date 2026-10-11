@@ -1,9 +1,13 @@
+import random
 from pathlib import Path
 
 import pytest
+from PIL import Image, ImageDraw
 
+from gifc import formatos
 from gifc.compress import CompressResult, compress_file, unique_output_path
 from gifc.formatos import gif as formato_gif
+from gifc.formatos import webp as formato_webp
 from gifc.formatos.base import EncodeError
 from gifc.ladder import Toggles
 from gifc.probe import Formato, ImagemInfo
@@ -328,3 +332,292 @@ def test_nao_deixa_temporarios_para_tras(tools, gif_pequeno, tmp_path):
 
     restantes = {p.name for p in tmp_path.iterdir()}
     assert restantes == {copia.name, r.dst.name}
+
+
+# --- despacho por formato ------------------------------------------------
+
+# PNG, JPEG e WebP não usam ferramenta externa: tudo vai pelo Pillow.
+SEM_FERRAMENTAS = Tools("ffmpeg", "ffprobe", None, oxipng=None)
+
+_PILLOW = {
+    Formato.GIF: "GIF", Formato.PNG: "PNG",
+    Formato.JPEG: "JPEG", Formato.WEBP: "WEBP",
+}
+
+
+def _textura(tamanho=(320, 240)) -> Image.Image:
+    """Ruído de baixa frequência sobre um degradê, com bordas nítidas:
+    compressível, mas não trivial, como uma foto."""
+    rng = random.Random(7)
+    pequeno = Image.frombytes(
+        "RGB", (40, 30), bytes(rng.randrange(256) for _ in range(40 * 30 * 3))
+    )
+    img = pequeno.resize(tamanho, Image.Resampling.BICUBIC)
+    grad = Image.linear_gradient("L").resize(tamanho)
+    img = Image.blend(img, Image.merge("RGB", (grad, grad, grad)), 0.5)
+    d = ImageDraw.Draw(img)
+    d.rectangle((20, 20, 100, 80), outline=(255, 255, 255), width=3)
+    d.ellipse((150, 100, 230, 180), fill=(220, 40, 40))
+    return img
+
+
+def _arquivo_real(formato: Formato, tmp_path: Path, request) -> Path:
+    """Um arquivo de verdade de `formato`, com o nome que a extensão manda."""
+    if formato is Formato.GIF:
+        origem = request.getfixturevalue("gif_pequeno")
+        destino = tmp_path / "entrada.gif"
+        destino.write_bytes(origem.read_bytes())
+        return destino
+    destino = tmp_path / f"entrada{formatos.extensao(formato)}"
+    opcoes = {} if formato is Formato.PNG else {"quality": 95}
+    _textura().save(destino, _PILLOW[formato], **opcoes)
+    return destino
+
+
+def _preparar_formato(tmp_path, monkeypatch, formato, nome=None):
+    """Como `_preparar`, mas para um arquivo de outro formato. O conteúdo é
+    arbitrário: o codificador do teste é falso e o `probe` é substituído."""
+    from gifc import compress as mod
+
+    src = tmp_path / (nome or f"a{formatos.extensao(formato)}")
+    src.write_bytes(b"x" * 5_000)
+    info = ImagemInfo(
+        path=src, formato=formato, width=100, height=100, fps=10.0,
+        frame_count=1, duration=0.0, size_bytes=src.stat().st_size,
+    )
+    monkeypatch.setattr(mod, "probe", lambda p: info)
+    return mod, src, info
+
+
+def _codificador_falso(tamanho: int):
+    """Um codificador que grava `tamanho` bytes. Devolve ele e a lista dos
+    `Params` com que foi chamado."""
+    vistos: list = []
+
+    def falso(s, d, params, i, t):
+        vistos.append(params)
+        d.write_bytes(b"w" * tamanho)
+        return tamanho
+
+    return falso, vistos
+
+
+def _webp_falso(monkeypatch, tamanho: int) -> list:
+    falso, vistos = _codificador_falso(tamanho)
+    monkeypatch.setattr(formato_webp, "codificar", falso)
+    return vistos
+
+
+def test_nome_de_saida_segue_o_formato_pedido(tmp_path):
+    src = tmp_path / "gato.png"
+    src.write_bytes(b"x")
+    assert unique_output_path(src, Formato.WEBP).name == "gato_comprimido.webp"
+    (tmp_path / "gato_comprimido.webp").write_bytes(b"y")
+    assert unique_output_path(src, Formato.WEBP).name == "gato_comprimido_2.webp"
+    # O nome livre é procurado na extensão da SAÍDA, não na da entrada.
+    assert unique_output_path(src, Formato.PNG).name == "gato_comprimido.png"
+
+
+def test_nome_de_saida_usa_a_extensao_do_mapa_e_nao_a_do_valor(tmp_path):
+    """`Formato.JPEG.value` é "jpeg"; a extensão do arquivo é ".jpg"."""
+    src = tmp_path / "foto.jpeg"
+    src.write_bytes(b"x")
+    assert unique_output_path(src, Formato.JPEG).name == "foto_comprimido.jpg"
+
+
+@pytest.mark.parametrize("formato", list(Formato))
+@pytest.mark.integration
+def test_comprime_cada_formato(formato, tmp_path, request):
+    src = _arquivo_real(formato, tmp_path, request)
+    original = src.stat().st_size
+    antes = src.read_bytes()
+    if formato is Formato.GIF:
+        alvo, ferramentas = 10_000_000, request.getfixturevalue("tools")
+    else:
+        alvo, ferramentas = original // 2, SEM_FERRAMENTAS
+
+    r = compress_file(src, alvo, TODOS, ferramentas)
+
+    assert r.formato_entrada is formato
+    assert r.formato_saida is formato
+    assert r.dst.is_file() and r.dst != src
+    assert r.dst.suffix == formatos.extensao(formato)
+    assert r.final_bytes == r.dst.stat().st_size
+    assert r.final_bytes <= original
+    assert src.read_bytes() == antes
+    with Image.open(r.dst) as img:
+        img.load()
+        assert img.format == _PILLOW[formato]
+    # A escada e o codificador são os do formato: os Params do resultado são
+    # da classe do módulo certo, não os de GIF.
+    assert not r.already_optimized
+    assert isinstance(r.params, formatos.para(formato).Params)
+    assert r.params in formatos.para(formato).TABELA
+    if formato is not Formato.GIF:
+        assert r.hit_target is True and r.final_bytes <= alvo
+
+
+@pytest.mark.parametrize("entrada", [Formato.PNG, Formato.JPEG])
+@pytest.mark.integration
+def test_extensao_da_saida_segue_o_formato_de_saida(entrada, tmp_path, request):
+    src = _arquivo_real(entrada, tmp_path, request)
+    antes = src.read_bytes()
+
+    r = compress_file(
+        src, src.stat().st_size // 2, TODOS, SEM_FERRAMENTAS, converter_webp=True,
+    )
+
+    assert r.formato_entrada is entrada
+    assert r.formato_saida is Formato.WEBP
+    assert r.dst.name == "entrada_comprimido.webp"
+    assert not r.already_optimized
+    assert isinstance(r.params, formato_webp.Params)
+    with Image.open(r.dst) as img:
+        img.load()
+        assert img.format == "WEBP"
+    assert src.read_bytes() == antes
+    # Só o original e o resultado; nenhum intermediário com a extensão errada.
+    assert {p.name for p in tmp_path.iterdir()} == {src.name, r.dst.name}
+
+
+@pytest.mark.integration
+def test_converter_webp_nao_afeta_gif(tools, gif_pequeno, tmp_path):
+    copia = tmp_path / "entrada.gif"
+    copia.write_bytes(gif_pequeno.read_bytes())
+
+    r = compress_file(copia, 10_000_000, TODOS, tools, converter_webp=True)
+
+    assert r.formato_entrada is Formato.GIF
+    assert r.formato_saida is Formato.GIF
+    assert r.dst.suffix == ".gif"
+    assert isinstance(r.params, formato_gif.Params)
+    with Image.open(r.dst) as img:
+        assert img.format == "GIF"
+
+
+@pytest.mark.parametrize("entrada", [Formato.GIF, Formato.WEBP])
+def test_converter_webp_so_vale_para_png_e_jpeg(tmp_path, monkeypatch, entrada):
+    """GIF nunca converte, e WebP já é WebP: com a caixa ligada a escada e o
+    codificador continuam os do formato de entrada."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, entrada)
+    modulo = formatos.para(entrada)
+    falso, vistos = _codificador_falso(100)
+    monkeypatch.setattr(modulo, "codificar", falso)
+
+    r = mod.compress_file(
+        src, 1_000_000, TODOS, Tools("ffmpeg", "ffprobe", "gifsicle"),
+        converter_webp=True,
+    )
+
+    assert vistos and all(isinstance(p, modulo.Params) for p in vistos)
+    assert r.formato_saida is entrada
+    assert r.dst.suffix == formatos.extensao(entrada)
+
+
+@pytest.mark.parametrize("entrada", [Formato.PNG, Formato.JPEG])
+def test_resultado_carrega_os_dois_formatos(tmp_path, monkeypatch, entrada):
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, entrada)
+    vistos_webp = _webp_falso(monkeypatch, 100)
+
+    convertido = mod.compress_file(
+        src, 1_000_000, TODOS, SEM_FERRAMENTAS, converter_webp=True,
+    )
+    assert convertido.formato_entrada is entrada
+    assert convertido.formato_saida is Formato.WEBP
+    assert convertido.dst.suffix == ".webp"
+    assert vistos_webp
+    assert all(isinstance(p, formato_webp.Params) for p in vistos_webp)
+
+    modulo = formatos.para(entrada)
+    falso, vistos = _codificador_falso(100)
+    monkeypatch.setattr(modulo, "codificar", falso)
+    mesmo = mod.compress_file(src, 1_000_000, TODOS, SEM_FERRAMENTAS)
+    assert mesmo.formato_entrada is entrada
+    assert mesmo.formato_saida is entrada
+    assert mesmo.dst.suffix == formatos.extensao(entrada)
+    assert vistos and all(isinstance(p, modulo.Params) for p in vistos)
+
+
+def test_conversao_usa_os_neutros_do_webp_e_nao_os_da_entrada(
+    tmp_path, monkeypatch
+):
+    """Com a alavanca de resolução desligada a escada de WebP fica a 100%: os
+    neutros e a tabela são os do formato de SAÍDA."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    vistos = _webp_falso(monkeypatch, 100)
+
+    mod.compress_file(
+        src, 1_000_000, Toggles(True, True, False, True), SEM_FERRAMENTAS,
+        converter_webp=True,
+    )
+
+    assert vistos
+    assert {p.scale_pct for p in vistos} == {100}
+    assert all(p.quality in {q.quality for q in formato_webp.TABELA} for p in vistos)
+
+
+@pytest.mark.parametrize(
+    "entrada, extensao_original",
+    [(Formato.PNG, ".png"), (Formato.JPEG, ".jpg")],
+)
+def test_sem_ganho_a_conversao_devolve_o_original_e_diz_a_verdade(
+    tmp_path, monkeypatch, entrada, extensao_original
+):
+    """Pediu WebP, mas nenhum degrau de WebP ficou menor que a entrada: o
+    original é copiado, e `formato_saida` e a extensão dizem o que FOI
+    escrito (a entrada), não o que foi pedido."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, entrada)
+    _webp_falso(monkeypatch, info.size_bytes + 500)
+
+    r = mod.compress_file(src, 10_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert r.already_optimized is True
+    assert r.formato_entrada is entrada
+    assert r.formato_saida is entrada
+    assert r.dst.suffix == extensao_original
+    assert r.dst.read_bytes() == src.read_bytes()
+    assert not list(tmp_path.glob("*.webp"))
+
+
+def test_com_ganho_a_conversao_reporta_webp(tmp_path, monkeypatch):
+    """O outro ramo do mesmo teste: o WebP menor é o que se escreve."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    _webp_falso(monkeypatch, info.size_bytes - 500)
+
+    r = mod.compress_file(src, 10_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert r.already_optimized is False
+    assert r.formato_saida is Formato.WEBP
+    assert r.dst.suffix == ".webp"
+    assert r.dst.stat().st_size == info.size_bytes - 500
+
+
+def test_empate_exato_na_conversao_tambem_devolve_o_original(
+    tmp_path, monkeypatch
+):
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    _webp_falso(monkeypatch, info.size_bytes)
+
+    r = mod.compress_file(src, 10_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert r.already_optimized is True
+    assert r.formato_saida is Formato.PNG
+    assert r.dst.suffix == ".png"
+
+
+def test_conversao_sem_ganho_nao_deixa_tmpdir_nem_webp(tmp_path, monkeypatch):
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.JPEG)
+    _webp_falso(monkeypatch, info.size_bytes + 1)
+    criados: list[Path] = []
+    original = mod.tempfile.mkdtemp
+
+    def espiao(*a, **k):
+        criados.append(Path(original(*a, **k)))
+        return str(criados[-1])
+
+    monkeypatch.setattr(mod.tempfile, "mkdtemp", espiao)
+
+    r = mod.compress_file(src, 10_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert criados and not criados[0].exists()
+    assert {p.name for p in tmp_path.iterdir()} == {src.name, r.dst.name}

@@ -31,6 +31,10 @@ class CompressResult:
     params: Any | None  # o `Params` do formato do arquivo; None se já otimizado
     hit_target: bool
     already_optimized: bool
+    # `formato_saida` é o formato do arquivo que FOI escrito, não o pedido:
+    # se a conversão não rendeu e o original foi copiado, é o da entrada.
+    formato_entrada: Formato
+    formato_saida: Formato
     attempts: list[Attempt] = field(default_factory=list)
 
     @property
@@ -40,14 +44,19 @@ class CompressResult:
         return 100.0 * (1 - self.final_bytes / self.original_bytes)
 
 
-def unique_output_path(src: Path) -> Path:
-    """`gato.gif` -> `gato_comprimido.gif`, sem nunca sobrescrever."""
-    base = src.with_name(f"{src.stem}{SUFIXO}{src.suffix}")
+def unique_output_path(src: Path, formato: Formato | None = None) -> Path:
+    """`gato.gif` -> `gato_comprimido.gif`, sem nunca sobrescrever.
+
+    Com `formato`, a extensão é a desse formato (a do mapa em
+    `gifc.formatos`, nunca `formato.value`); sem ele, a de `src`.
+    """
+    ext = src.suffix if formato is None else formatos.extensao(formato)
+    base = src.with_name(f"{src.stem}{SUFIXO}{ext}")
     if not base.exists():
         return base
     n = 2
     while True:
-        candidato = src.with_name(f"{src.stem}{SUFIXO}_{n}{src.suffix}")
+        candidato = src.with_name(f"{src.stem}{SUFIXO}_{n}{ext}")
         if not candidato.exists():
             return candidato
         n += 1
@@ -58,8 +67,8 @@ def _try_path(tmpdir: Path, index: int, formato: Formato) -> Path:
 
     Único lugar que sabe a convenção `try_{index}{extensão}` — usado tanto ao
     codificar quanto ao localizar o vencedor depois da busca. A extensão
-    segue o formato de entrada (nada converte formato ainda) porque o Pillow
-    escolhe o formato de saída por ela.
+    segue o formato de SAÍDA da escada em uso (é o WebP numa conversão)
+    porque o Pillow escolhe o formato de saída por ela.
     """
     return tmpdir / f"try_{index}{formatos.extensao(formato)}"
 
@@ -69,17 +78,24 @@ def compress_file(
     target_bytes: int,
     toggles: Toggles,
     tools: Tools,
+    converter_webp: bool = False,
     on_progress: ProgressFn | None = None,
     should_cancel: CancelFn | None = None,
 ) -> CompressResult:
-    """Comprime `src` buscando o melhor resultado que cabe em `target_bytes`."""
+    """Comprime `src` buscando o melhor resultado que cabe em `target_bytes`.
+
+    Com `converter_webp`, um PNG ou JPEG percorre a escada de WebP. Se nenhum
+    degrau ficar menor que a entrada o original é copiado, e então
+    `formato_saida` (e a extensão de `dst`) é o da entrada: o resultado diz o
+    que foi escrito, não o que foi pedido.
+    """
     src = Path(src)
     info = probe(src)
 
-    modulo = formatos.para(info.formato)
-    toggles = formatos.toggles_efetivos(info.formato, toggles, tools)
+    saida = formatos.formato_de_saida(info.formato, converter_webp)
+    modulo = formatos.para(saida)
+    toggles = formatos.toggles_efetivos(saida, toggles, tools)
     escada = aplicar_toggles(modulo.TABELA, info, toggles, modulo.NEUTROS)
-    dst = unique_output_path(src)
 
     tmpdir = Path(tempfile.mkdtemp(prefix="gifc_"))
     try:
@@ -94,7 +110,7 @@ def compress_file(
             for _tentativa in range(2):
                 try:
                     return modulo.codificar(
-                        src, _try_path(tmpdir, index, info.formato),
+                        src, _try_path(tmpdir, index, saida),
                         params, info, tools,
                     )
                 except EncodeError as exc:
@@ -113,10 +129,13 @@ def compress_file(
                 f"O arquivo pode estar corrompido."
             )
 
-        vencedor = _try_path(tmpdir, resultado.index, info.formato)
+        vencedor = _try_path(tmpdir, resultado.index, saida)
 
-        # GIFs já muito otimizados podem crescer ao serem reescritos.
+        # Arquivos já muito otimizados podem crescer ao serem reescritos, e um
+        # WebP pode ficar maior que o PNG/JPEG de origem. Em ambos os casos o
+        # original é copiado, no formato (e na extensão) dele.
         if resultado.size_bytes >= info.size_bytes:
+            dst = unique_output_path(src, info.formato)
             shutil.copy2(src, dst)
             return CompressResult(
                 src=src, dst=dst,
@@ -125,9 +144,12 @@ def compress_file(
                 params=None,
                 hit_target=info.size_bytes <= target_bytes,
                 already_optimized=True,
+                formato_entrada=info.formato,
+                formato_saida=info.formato,
                 attempts=resultado.attempts,
             )
 
+        dst = unique_output_path(src, saida)
         shutil.move(str(vencedor), str(dst))
         return CompressResult(
             src=src, dst=dst,
@@ -136,6 +158,8 @@ def compress_file(
             params=resultado.params,
             hit_target=resultado.hit_target,
             already_optimized=False,
+            formato_entrada=info.formato,
+            formato_saida=saida,
             attempts=resultado.attempts,
         )
     finally:
