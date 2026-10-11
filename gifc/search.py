@@ -8,11 +8,14 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import Generic, TypeVar
 
-from gifc.ladder import Params
+# Tipo dos parâmetros de um degrau. A busca não olha dentro deles: só os
+# repassa ao codificador, então vale para o `Params` de qualquer formato.
+Params = TypeVar("Params")
 
 EncodeFn = Callable[[int, Params], int]
-ProgressFn = Callable[["Attempt", int], None]
+ProgressFn = Callable[["Attempt[Params]", int], None]
 CancelFn = Callable[[], bool]
 
 # Sentinela de tamanho para um degrau que falhou: a busca o trata como
@@ -34,7 +37,7 @@ class RungFailed(Exception):
 
 
 @dataclass(frozen=True)
-class Attempt:
+class Attempt(Generic[Params]):
     index: int
     params: Params
     size_bytes: int
@@ -42,21 +45,21 @@ class Attempt:
 
 
 @dataclass
-class SearchResult:
+class SearchResult(Generic[Params]):
     index: int
     params: Params
     size_bytes: int
     hit_target: bool
-    attempts: list[Attempt] = field(default_factory=list)
+    attempts: list[Attempt[Params]] = field(default_factory=list)
 
 
 def find_best(
     ladder: Sequence[Params],
     target_bytes: int,
-    encode_fn: EncodeFn,
-    on_progress: ProgressFn | None = None,
+    encode_fn: EncodeFn[Params],
+    on_progress: ProgressFn[Params] | None = None,
     should_cancel: CancelFn | None = None,
-) -> SearchResult:
+) -> SearchResult[Params]:
     """Acha o degrau de MAIOR qualidade cujo resultado cabe no alvo.
 
     A escada garante que cada degrau é fracamente mais agressivo que o
@@ -74,10 +77,10 @@ def find_best(
         raise ValueError("A escada de qualidade está vazia.")
 
     total = len(ladder)
-    attempts: list[Attempt] = []
+    attempts: list[Attempt[Params]] = []
 
-    melhor_valido: Attempt | None = None
-    menor_absoluto: Attempt | None = None
+    melhor_valido: Attempt[Params] | None = None
+    menor_absoluto: Attempt[Params] | None = None
 
     lo, hi = 0, total - 1
     while lo <= hi:

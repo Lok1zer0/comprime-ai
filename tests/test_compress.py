@@ -3,7 +3,8 @@ from pathlib import Path
 import pytest
 
 from gifc.compress import CompressResult, compress_file, unique_output_path
-from gifc.encode import EncodeError
+from gifc.formatos import gif as formato_gif
+from gifc.formatos.base import EncodeError
 from gifc.ladder import Toggles
 from gifc.probe import Formato, ImagemInfo
 from gifc.tools import Tools
@@ -12,7 +13,7 @@ TODOS = Toggles(True, True, True, True)
 
 
 def _preparar(tmp_path, monkeypatch, gifsicle="gifsicle"):
-    """Isola compress_file do disco: probe e encode viram funções falsas."""
+    """Isola compress_file do disco: probe e codificar viram funções falsas."""
     from gifc import compress as mod
 
     src = tmp_path / "a.gif"
@@ -59,7 +60,7 @@ def test_degrau_que_falha_e_pulado(tmp_path, monkeypatch):
         d.write_bytes(b"GIF89a" + b"y" * (2_000 - idx * 50))
         return d.stat().st_size
 
-    monkeypatch.setattr(mod, "encode", encode_falho)
+    monkeypatch.setattr(formato_gif, "codificar", encode_falho)
 
     r = mod.compress_file(src, 1_800, TODOS, tools)
 
@@ -90,7 +91,7 @@ def test_encode_fn_tenta_de_novo_apos_falha_transitoria_no_mesmo_degrau(
         d.write_bytes(b"GIF89a" + b"y" * (2_000 - idx * 50))
         return d.stat().st_size
 
-    monkeypatch.setattr(mod, "encode", encode_falha_uma_vez)
+    monkeypatch.setattr(formato_gif, "codificar", encode_falha_uma_vez)
 
     r = mod.compress_file(src, 1_800, TODOS, tools)
 
@@ -115,7 +116,7 @@ def test_encode_fn_desiste_apos_falhar_duas_vezes_seguidas_no_mesmo_degrau(
         d.write_bytes(b"GIF89a" + b"y" * (2_000 - idx * 50))
         return d.stat().st_size
 
-    monkeypatch.setattr(mod, "encode", encode_sempre_falha_no_indice_9)
+    monkeypatch.setattr(formato_gif, "codificar", encode_sempre_falha_no_indice_9)
 
     r = mod.compress_file(src, 1_800, TODOS, tools)
 
@@ -141,7 +142,7 @@ def test_todos_os_degraus_falhando_levanta_erro(tmp_path, monkeypatch):
     def sempre_falha(s, d, params, i, t):
         raise EncodeError("quebrado")
 
-    monkeypatch.setattr(mod, "encode", sempre_falha)
+    monkeypatch.setattr(formato_gif, "codificar", sempre_falha)
 
     with pytest.raises(mod.CompressError):
         mod.compress_file(src, 1_000, TODOS, tools)
@@ -161,7 +162,7 @@ def test_ja_otimizado_copia_o_original(tmp_path, monkeypatch):
         d.write_bytes(b"GIF89a" + b"z" * (info.size_bytes + 500))
         return d.stat().st_size
 
-    monkeypatch.setattr(mod, "encode", encode_maior)
+    monkeypatch.setattr(formato_gif, "codificar", encode_maior)
 
     r = mod.compress_file(src, 10_000, TODOS, tools)
 
@@ -189,7 +190,7 @@ def test_ja_otimizado_hit_target_usa_o_tamanho_original(
         d.write_bytes(b"GIF89a" + b"z" * (info.size_bytes + 500))
         return d.stat().st_size
 
-    monkeypatch.setattr(mod, "encode", encode_maior)
+    monkeypatch.setattr(formato_gif, "codificar", encode_maior)
 
     r = mod.compress_file(src, target_bytes, TODOS, tools)
 
@@ -225,7 +226,7 @@ def test_ja_otimizado_hit_target_discrimina_original_de_tentativa(tmp_path, monk
         assert d.stat().st_size == tentativa_tamanho
         return d.stat().st_size
 
-    monkeypatch.setattr(mod, "encode", encode_maior)
+    monkeypatch.setattr(formato_gif, "codificar", encode_maior)
 
     r = mod.compress_file(src, alvo, TODOS, tools)
 
@@ -245,7 +246,7 @@ def test_ja_otimizado_dispara_em_empate_exato(tmp_path, monkeypatch):
         assert d.stat().st_size == info.size_bytes
         return d.stat().st_size
 
-    monkeypatch.setattr(mod, "encode", encode_igual)
+    monkeypatch.setattr(formato_gif, "codificar", encode_igual)
 
     r = mod.compress_file(src, 10_000, TODOS, tools)
 
@@ -262,7 +263,7 @@ def test_sem_gifsicle_descarta_a_coluna_lossy(tmp_path, monkeypatch):
         d.write_bytes(b"GIF89a" + b"y" * 100)
         return d.stat().st_size
 
-    monkeypatch.setattr(mod, "encode", encode_ok)
+    monkeypatch.setattr(formato_gif, "codificar", encode_ok)
     mod.compress_file(src, 1_000_000, TODOS, tools)
 
     assert vistos

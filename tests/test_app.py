@@ -17,7 +17,7 @@ from unittest import mock
 import pytest
 
 from gifc.app import MB, _mb, _parse_alvo_mb
-from gifc.ladder import Params
+from gifc.formatos.gif import Params
 from gifc.search import Attempt
 
 

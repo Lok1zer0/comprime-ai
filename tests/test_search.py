@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from gifc.ladder import Params
+from gifc.formatos.gif import Params
 from gifc.search import FALHOU, Cancelled, RungFailed, find_best
 
 

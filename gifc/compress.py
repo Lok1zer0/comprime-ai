@@ -7,9 +7,11 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from gifc.encode import EncodeError, encode
-from gifc.ladder import Params, Toggles, build
+from gifc import formatos
+from gifc.formatos.base import EncodeError
+from gifc.ladder import Toggles, aplicar_toggles
 from gifc.probe import probe
 from gifc.search import FALHOU, Attempt, CancelFn, ProgressFn, RungFailed, find_best
 from gifc.tools import Tools
@@ -27,7 +29,7 @@ class CompressResult:
     dst: Path
     original_bytes: int
     final_bytes: int
-    params: Params | None
+    params: Any | None  # o `Params` do formato do arquivo; None se já otimizado
     hit_target: bool
     already_optimized: bool
     attempts: list[Attempt] = field(default_factory=list)
@@ -78,12 +80,13 @@ def compress_file(
     if tools.gifsicle is None:
         toggles = dataclasses.replace(toggles, lossy=False)
 
-    escada = build(info, toggles)
+    modulo = formatos.para(info.formato)
+    escada = aplicar_toggles(modulo.TABELA, info, toggles)
     dst = unique_output_path(src)
 
     tmpdir = Path(tempfile.mkdtemp(prefix="gifc_"))
     try:
-        def encode_fn(index: int, params: Params) -> int:
+        def encode_fn(index: int, params: Any) -> int:
             # Uma falha transitória do ffmpeg/gifsicle (arquivo temporário
             # ainda travado por antivírus, hiccup de I/O) não pode custar a
             # metade de alta qualidade da escada inteira. Tenta de novo uma
@@ -93,7 +96,7 @@ def compress_file(
             ultimo_erro: EncodeError | None = None
             for _tentativa in range(2):
                 try:
-                    return encode(
+                    return modulo.codificar(
                         src, _try_path(tmpdir, index), params, info, tools
                     )
                 except EncodeError as exc:
