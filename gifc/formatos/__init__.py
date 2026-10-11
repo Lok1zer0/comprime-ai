@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from gifc.formatos import gif
+from gifc.formatos import gif, png
 from gifc.formatos.base import EncodeError, ModuloFormato
 from gifc.ladder import Toggles
 from gifc.probe import Formato
@@ -10,6 +10,7 @@ from gifc.tools import Tools
 
 _REGISTRO: dict[Formato, ModuloFormato] = {
     Formato.GIF: gif,
+    Formato.PNG: png,
 }
 
 # Extensão do arquivo de cada formato, declarada à mão: `Formato.JPEG.value`

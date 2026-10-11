@@ -6,6 +6,7 @@ sem ciclo com o registro.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -13,8 +14,29 @@ from gifc.probe import ImagemInfo
 from gifc.tools import Tools
 
 
+TIMEOUT_SEGUNDOS = 600
+
+
 class EncodeError(Exception):
     """Um dos estágios de codificação falhou."""
+
+
+def executar(cmd: list[str], etapa: str) -> None:
+    """Roda um programa externo; qualquer falha vira `EncodeError`.
+
+    `etapa` é o nome do estágio, usado nas mensagens ao usuário.
+    """
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=TIMEOUT_SEGUNDOS
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise EncodeError(f"{etapa} demorou demais e foi interrompido.") from exc
+    except OSError as exc:
+        raise EncodeError(f"Falha ao executar {etapa}: {exc}") from exc
+
+    if proc.returncode != 0:
+        raise EncodeError(f"{etapa} falhou: {proc.stderr.strip()[:500]}")
 
 
 class ModuloFormato(Protocol):

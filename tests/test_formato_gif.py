@@ -137,7 +137,7 @@ def test_encode_modo_degradado_sem_gifsicle_usa_so_o_ffmpeg(tmp_path, monkeypatc
         Path(cmd[-1]).write_bytes(b"GIF89a-fake")
         return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(encode_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
 
     ferramentas_degradadas = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", gifsicle=None)
     src = tmp_path / "a.gif"

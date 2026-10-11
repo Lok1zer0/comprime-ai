@@ -287,7 +287,7 @@ def verificar_neutros(modulo: Any, rotulo: str) -> None:
 # Formatos que existem em `Formato` mas ainda não têm módulo. Cada tarefa que
 # registra um formato DEVE tirá-lo daqui — `test_pendentes_nao_inclui_...`
 # falha se alguém esquecer, para a invariante nunca ser pulada em silêncio.
-PENDENTES = {Formato.PNG, Formato.JPEG, Formato.WEBP}
+PENDENTES = {Formato.JPEG, Formato.WEBP}
 
 
 @pytest.mark.parametrize("formato", list(Formato))

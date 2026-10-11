@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from gifc.formatos.base import EncodeError
+from gifc.formatos.base import EncodeError, executar
 from gifc.ladder import Toggles, target_width
 from gifc.probe import ImagemInfo
 from gifc.tools import Tools
-
-TIMEOUT_SEGUNDOS = 600
 
 
 @dataclass(frozen=True)
@@ -138,20 +135,6 @@ def build_gifsicle_cmd(
     return cmd
 
 
-def _run(cmd: list[str], etapa: str) -> None:
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=TIMEOUT_SEGUNDOS
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise EncodeError(f"{etapa} demorou demais e foi interrompido.") from exc
-    except OSError as exc:
-        raise EncodeError(f"Falha ao executar {etapa}: {exc}") from exc
-
-    if proc.returncode != 0:
-        raise EncodeError(f"{etapa} falhou: {proc.stderr.strip()[:500]}")
-
-
 def codificar(
     src: Path, dst: Path, params: Params, info: ImagemInfo, tools: Tools
 ) -> int:
@@ -166,14 +149,14 @@ def codificar(
     intermediario = Path(intermediario_str)
 
     try:
-        _run(build_ffmpeg_cmd(tools, src, intermediario, info, params), "ffmpeg")
+        executar(build_ffmpeg_cmd(tools, src, intermediario, info, params), "ffmpeg")
 
         if tools.gifsicle is None:
             # Modo degradado: sem o estágio lossy, o resultado do ffmpeg
             # já é o final.
             intermediario.replace(dst)
         else:
-            _run(build_gifsicle_cmd(tools, intermediario, dst, params), "gifsicle")
+            executar(build_gifsicle_cmd(tools, intermediario, dst, params), "gifsicle")
 
         if not dst.is_file():
             raise EncodeError("A codificação não produziu arquivo de saída.")
