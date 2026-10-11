@@ -90,6 +90,10 @@ def _para_srgb(
     if perfil[16:20] == b"RGB ":
         return img, perfil
     if img.mode in ("L", "LA", "CMYK"):
+        if img.mode == "L" and "transparency" in img.info:
+            # Cor-chave: vira canal antes de a conversão de perfil, que
+            # devolve uma imagem nova sem o `info`.
+            img = img.convert("LA")
         try:
             cor = img.getchannel("L") if img.mode == "LA" else img
             rgb = ImageCms.profileToProfile(

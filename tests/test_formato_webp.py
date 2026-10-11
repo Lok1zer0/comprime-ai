@@ -1,6 +1,7 @@
 import dataclasses
 import hashlib
 import random
+import struct
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,33 @@ def _degrade_horizontal() -> Image.Image:
     """200x100, preto à esquerda e branco à direita."""
     linha = bytes(x * 255 // 199 for x in range(200))
     return Image.frombytes("L", (200, 100), linha * 100)
+
+
+def _perfil_de_cinza(gama: float) -> bytes:
+    """Um perfil ICC de tons de cinza mínimo mas válido (curva de gama),
+    montado à mão: o LittleCMS do Pillow o aceita."""
+
+    def s15(v: float) -> bytes:
+        return struct.pack(">i", round(v * 65536))
+
+    desc = b"gifc gray\x00"
+    tags = {
+        b"wtpt": b"XYZ \x00\x00\x00\x00" + s15(0.9642) + s15(1.0) + s15(0.8249),
+        b"kTRC": b"curv\x00\x00\x00\x00" + struct.pack(">IH", 1, round(gama * 256)) + b"\x00\x00",
+        b"desc": b"desc\x00\x00\x00\x00" + struct.pack(">I", len(desc)) + desc + b"\x00" * 78,
+        b"cprt": b"text\x00\x00\x00\x00public domain\x00",
+    }
+    base = 128 + 4 + 12 * len(tags)
+    tabela, corpo = b"", b""
+    for assinatura, dados in tags.items():
+        tabela += assinatura + struct.pack(">II", base + len(corpo), len(dados))
+        corpo += dados + b"\x00" * (-len(dados) % 4)
+    cab = struct.pack(
+        ">I4sI4s4s4s", base + len(corpo), b"lcms", 0x02100000, b"mntr", b"GRAY", b"XYZ "
+    )
+    cab += b"\x00" * 12 + b"acsp" + b"\x00" * 20
+    cab += s15(0.9642) + s15(1.0) + s15(0.8249)
+    return cab.ljust(128, b"\x00") + struct.pack(">I", len(tags)) + tabela + corpo
 
 
 def _alfa_em(img: Image.Image, x: int, y: int) -> int:
@@ -375,6 +403,38 @@ def test_cinza_com_alfa_mantem_alfa(tmp_path):
         saida = s.convert("RGBA")
     assert _alfa_em(saida, 2, 2) == 0
     assert _alfa_em(saida, 40, 30) == 255
+
+
+@pytest.mark.integration
+def test_cinza_com_cor_chave_e_perfil_de_cinza_mantem_alfa(tmp_path):
+    """A conversão do perfil de cinza devolve uma imagem nova sem o `info`:
+    a cor-chave transparente tem de virar canal antes disso."""
+    img = Image.new("L", (80, 60), 0)
+    ImageDraw.Draw(img).rectangle((20, 15, 60, 45), fill=200)
+    src = tmp_path / "chave_cinza.png"
+    img.save(src, transparency=0, icc_profile=_perfil_de_cinza(1.0))
+    dst = tmp_path / "saida.webp"
+    codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
+    with Image.open(dst) as s:
+        saida = s.convert("RGBA")
+    assert _alfa_em(saida, 2, 2) == 0
+    assert _alfa_em(saida, 40, 30) == 255
+
+
+@pytest.mark.integration
+def test_perfil_de_cinza_e_aplicado_na_conversao_para_rgb(tmp_path):
+    """Gama 1.0 em vez de ~2.2: o cinza 128 só PARECE meio-tom se for
+    reinterpretado; pelo perfil ele é bem mais claro em sRGB. Se o perfil
+    fosse ignorado (convert direto) sairia 128."""
+    src = tmp_path / "gama.png"
+    Image.new("L", (64, 64), 128).save(src, icc_profile=_perfil_de_cinza(1.0))
+    dst = tmp_path / "saida.webp"
+    codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
+    with Image.open(dst) as s:
+        assert s.mode == "RGB"
+        assert (s.info.get("icc_profile") or b"")[16:20] != b"GRAY"
+        r, g, b = s.getpixel((32, 32))
+    assert r > 170 and abs(r - g) < 4 and abs(r - b) < 4
 
 
 @pytest.mark.integration
