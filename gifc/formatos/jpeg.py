@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, JpegImagePlugin
 
 from gifc.formatos.base import EncodeError
 from gifc.ladder import target_width
@@ -27,7 +27,9 @@ class Params:
 
     `subsampling` segue a convenção do Pillow: 0 é 4:4:4 (sem perda de
     crominância) e 2 é 4:2:0. Nessa coluna o número MAIOR é o mais agressivo,
-    o contrário de `quality` e `scale_pct`.
+    o contrário de `quality` e `scale_pct`. O valor -1 é nosso, não do
+    Pillow: "igual ao da fonte", o extremo menos agressivo. Ele NUNCA é
+    passado ao Pillow, onde -1 significa 4:2:0.
     """
 
     quality: int
@@ -37,10 +39,12 @@ class Params:
 
 # Cada degrau é fracamente mais agressivo que o anterior em todas as
 # dimensões: qualidade e escala nunca aumentam, a subamostragem nunca volta
-# de 4:2:0 para 4:4:4.
+# de 4:2:0 para 4:4:4 (-1 < 0 < 2). Os degraus 0 e 1 mantêm a subamostragem
+# da fonte em vez de impor 4:4:4: impor engordaria uma foto 4:2:0, e a
+# spec os chama de os mais conservadores.
 TABELA: tuple[Params, ...] = (
-    Params(92, 0, 100),     # 0
-    Params(88, 0, 100),     # 1
+    Params(92, -1, 100),    # 0
+    Params(88, -1, 100),    # 1
     Params(85, 2, 100),     # 2
     Params(80, 2, 100),     # 3
     Params(75, 2, 100),     # 4
@@ -54,7 +58,8 @@ TABELA: tuple[Params, ...] = (
 )
 
 # Em que sentido cada campo fica MAIS agressivo. A subamostragem é a exceção
-# que importa: 0 é 4:4:4 e 2 é 4:2:0, então aqui o MAIOR é o mais agressivo.
+# que importa: -1 é "como a fonte", 0 é 4:4:4 e 2 é 4:2:0, então aqui o MAIOR
+# é o mais agressivo.
 SENTIDOS: dict[str, str] = {
     "quality": "menor",
     "subsampling": "maior",
@@ -84,27 +89,44 @@ def _tem_alfa(img: Image.Image) -> bool:
 def _para_jpeg(
     img: Image.Image, perfil: bytes | None
 ) -> tuple[Image.Image, bytes | None]:
-    """Leva `img` a um modo que o JPEG grava (L ou RGB), com o perfil que
+    """Leva `img` a um modo que o JPEG grava (L, RGB ou CMYK), com o perfil que
     continua valendo para esse modo.
 
     - Tons de cinza ficam em L: converter para RGB só incharia o arquivo.
     - Alfa é achatado sobre BRANCO. Um `convert("RGB")` direto descartaria o
       canal e mostraria o que estiver "por baixo" dos pixels transparentes,
       em geral preto.
-    - CMYK vira RGB pela fórmula do Pillow; o perfil CMYK não descreve mais
-      os pixels e é largado. É aproximado (limitação conhecida: converter
-      pelo perfil exigiria um perfil CMYK, que o Pillow não traz).
+    - CMYK continua CMYK, com o perfil: o Pillow grava CMYK em JPEG, e
+      converter para RGB pela fórmula dele mudaria as cores de uma imagem
+      com perfil de impressão, sem aviso e sem volta.
     """
     img = _para_8_bits(img)
     if _tem_alfa(img):
         rgba = img.convert("RGBA")
         fundo = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
         return Image.alpha_composite(fundo, rgba).convert("RGB"), perfil
-    if img.mode == "CMYK":
-        return img.convert("RGB"), None
-    if img.mode in ("L", "RGB"):
+    if img.mode in ("L", "RGB", "CMYK"):
         return img, perfil
     return img.convert("RGB"), perfil
+
+
+def _subsampling(aberta: Image.Image, params: Params) -> int:
+    """A subamostragem a gravar. -1 ("como a fonte") é resolvido AQUI, lendo
+    a fonte aberta, antes de qualquer cópia: o Pillow trata -1 como 4:2:0 e
+    `"keep"` falha em imagens que não são o arquivo aberto (sempre o nosso
+    caso: girar, converter e escalar devolvem cópias).
+
+    Tons de cinza, CMYK e fontes que não são JPEG não têm crominância em 3
+    camadas a preservar (`get_sampling` devolve -1 ou nem se aplica): 4:4:4,
+    que não descarta nada.
+    """
+    if params.subsampling != -1:
+        return params.subsampling
+    if isinstance(aberta, JpegImagePlugin.JpegImageFile):
+        amostragem = JpegImagePlugin.get_sampling(aberta)
+        if amostragem != -1:
+            return amostragem
+    return 0
 
 
 def _escalar(img: Image.Image, scale_pct: int) -> Image.Image:
@@ -142,6 +164,9 @@ def codificar(
     try:
         with Image.open(src) as aberta:
             perfil = aberta.info.get("icc_profile")
+            subsampling = _subsampling(aberta, params)
+            # Um JPEG com várias imagens (MPO) mantém só a primária, e o XMP
+            # não é copiado: um mapa de ganho HDR, por exemplo, se perde.
             # Devolve uma cópia já girada e com a tag removida do EXIF.
             img = ImageOps.exif_transpose(aberta)
             exif = img.getexif()
@@ -153,7 +178,7 @@ def codificar(
                 dst,
                 format="JPEG",
                 quality=params.quality,
-                subsampling=params.subsampling,
+                subsampling=subsampling,
                 progressive=True,
                 optimize=True,
                 exif=exif if len(exif) else b"",

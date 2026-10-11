@@ -91,7 +91,7 @@ def test_comeca_em_qualidade_noventa_e_dois():
 
 def test_tabela_e_exatamente_a_da_spec():
     esperada = [
-        (92, 0, 100), (88, 0, 100), (85, 2, 100), (80, 2, 100),
+        (92, -1, 100), (88, -1, 100), (85, 2, 100), (80, 2, 100),
         (75, 2, 100), (70, 2, 100), (65, 2, 100), (60, 2, 85),
         (55, 2, 85), (50, 2, 70), (45, 2, 70), (40, 2, 50),
     ]
@@ -103,6 +103,9 @@ def test_sentido_de_subsampling_e_maior_mais_agressivo():
     4:2:0 (mais). Declarar 'menor' aqui faria a invariante aceitar uma escada
     que VOLTA de 4:2:0 para 4:4:4."""
     assert SENTIDOS["subsampling"] == "maior"
+    # -1 ("como a fonte") é o menos agressivo, abaixo de 4:4:4.
+    assert TABELA[0].subsampling == TABELA[1].subsampling == -1
+    assert -1 < 0 < 2
     assert SENTIDOS["quality"] == "menor"
     assert SENTIDOS["scale_pct"] == "menor"
 
@@ -155,18 +158,57 @@ def test_qualidade_menor_gera_arquivo_menor(tmp_path):
     assert len(set(tamanhos)) == 3
 
 
+def _amostragem(path: Path) -> int:
+    with Image.open(path) as img:
+        return JpegImagePlugin.get_sampling(img)
+
+
 @pytest.mark.integration
-def test_subsampling_do_degrau_e_o_que_sai_no_arquivo(tmp_path):
-    """O Pillow só honra `subsampling` quando passado explícito; sem isso os
-    degraus 0 e 1 (4:4:4) sairiam 4:2:0 sem ninguém notar, pois o arquivo
-    continuaria menor."""
-    src = _foto(tmp_path / "foto.jpg")
+@pytest.mark.parametrize("fonte", [0, 2], ids=["fonte-444", "fonte-420"])
+def test_degraus_conservadores_mantem_a_subamostragem_da_fonte(tmp_path, fonte):
+    """Degraus 0 e 1 gravam o que a fonte tinha: 4:4:4 continua 4:4:4 (uma
+    captura de tela não perde crominância no degrau mais conservador) e
+    4:2:0 continua 4:2:0 (sem inflar a foto). Do degrau 2 em diante é 4:2:0
+    qualquer que seja a fonte."""
+    src = _foto(tmp_path / "foto.jpg", subsampling=fonte)
+    assert _amostragem(src) == fonte
     info = probe(src)
-    for indice, esperado in ((0, 0), (1, 0), (2, 2), (11, 2)):
+    for indice in (0, 1, 2, 11):
         dst = tmp_path / f"s{indice}.jpg"
         codificar(src, dst, TABELA[indice], info, SEM_FERRAMENTAS)
+        esperado = fonte if indice in (0, 1) else 2
+        assert _amostragem(dst) == esperado, indice
+
+
+@pytest.mark.integration
+def test_subsampling_nunca_passa_menos_um_ao_pillow(tmp_path, monkeypatch):
+    """No Pillow -1 é 4:2:0, não 'igual à fonte'. O valor tem de ser
+    resolvido antes do `save`."""
+    vistos = []
+    original = Image.Image.save
+
+    def espia(self, fp, format=None, **params):
+        vistos.append(params.get("subsampling"))
+        return original(self, fp, format, **params)
+
+    monkeypatch.setattr(Image.Image, "save", espia)
+    src = _foto(tmp_path / "foto.jpg", subsampling=0)
+    vistos.clear()
+    codificar(src, tmp_path / "s.jpg", TABELA[0], probe(src), SEM_FERRAMENTAS)
+    assert vistos == [0]
+
+
+@pytest.mark.integration
+def test_fonte_em_tons_de_cinza_nos_degraus_conservadores(tmp_path):
+    """`get_sampling` devolve -1 para imagem de 1 camada; isso não pode
+    chegar ao Pillow nem derrubar a codificação."""
+    src = tmp_path / "cinza.jpg"
+    Image.linear_gradient("L").resize((200, 100)).save(src, "JPEG")
+    for indice in (0, 1):
+        dst = tmp_path / f"s{indice}.jpg"
+        codificar(src, dst, TABELA[indice], probe(src), SEM_FERRAMENTAS)
         with Image.open(dst) as img:
-            assert JpegImagePlugin.get_sampling(img) == esperado, indice
+            assert img.mode == "L"
 
 
 @pytest.mark.integration
@@ -353,19 +395,29 @@ def test_jpeg_em_tons_de_cinza_continua_em_tons_de_cinza(tmp_path):
 
 
 @pytest.mark.integration
-def test_entrada_cmyk_vira_rgb_sem_inverter_as_cores(tmp_path):
+def test_entrada_cmyk_continua_cmyk_com_o_perfil(tmp_path):
+    """Converter CMYK para RGB pela fórmula do Pillow e largar o perfil muda
+    as cores de um original com perfil de impressão, sem aviso. O modelo de
+    cor e o perfil têm de sobreviver em todos os degraus."""
+    perfil = b"perfil-cmyk-de-teste" * 8   # opaco: o Pillow só o transporta
     src = tmp_path / "cmyk.jpg"
-    Image.new("CMYK", (64, 64), (0, 255, 255, 0)).save(src, "JPEG", quality=95)
+    Image.new("CMYK", (200, 100), (0, 255, 255, 0)).save(
+        src, "JPEG", quality=95, icc_profile=perfil
+    )
     with Image.open(src) as original:
-        esperado = original.convert("RGB").getpixel((32, 32))
-    dst = tmp_path / "s.jpg"
-    codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
-    with Image.open(dst) as img:
-        assert img.mode == "RGB"
-        r, g, b = img.getpixel((32, 32))
-    assert abs(r - esperado[0]) < 25 and abs(g - esperado[1]) < 25
-    assert abs(b - esperado[2]) < 25
-    assert r > 200 and g < 60 and b < 60     # vermelho, não ciano
+        esperado = original.getpixel((100, 50))
+    info = probe(src)
+    for indice in range(len(TABELA)):
+        dst = tmp_path / f"s{indice}.jpg"
+        codificar(src, dst, TABELA[indice], info, SEM_FERRAMENTAS)
+        with Image.open(dst) as img:
+            assert img.mode == "CMYK", indice
+            assert img.info.get("icc_profile") == perfil, indice
+            obtido = img.getpixel((img.width // 2, img.height // 2))
+        # Mesmos canais, sem inversão: tolera só o erro da compressão.
+        assert all(abs(o - e) < 40 for o, e in zip(obtido, esperado)), (
+            indice, obtido, esperado,
+        )
 
 
 @pytest.mark.integration
@@ -405,10 +457,42 @@ def test_arquivo_corrompido_vira_encodeerror_em_portugues(tmp_path):
     ok = _foto(tmp_path / "ok.jpg")
     src = tmp_path / "ruim.jpg"
     src.write_bytes(b"\xff\xd8\xff\xe0" + b"isto nao e um jpeg" * 5)
-    dst = tmp_path / "s.jpg"
     with pytest.raises(EncodeError, match="JPEG"):
-        codificar(src, dst, TABELA[0], probe(ok), SEM_FERRAMENTAS)
+        codificar(src, tmp_path / "s.jpg", TABELA[0], probe(ok), SEM_FERRAMENTAS)
+
+
+@pytest.mark.integration
+def test_falha_no_meio_da_gravacao_nao_deixa_arquivo_parcial(tmp_path, monkeypatch):
+    """O modo real de falha depois de abrir a fonte: o `save` morre com o
+    arquivo de saída já escrito pela metade (disco cheio, por exemplo)."""
+    src = _foto(tmp_path / "foto.jpg")
+    dst = tmp_path / "s.jpg"
+
+    def save_quebrado(self, fp, format=None, **params):
+        Path(fp).write_bytes(b"\xff\xd8\xff parcial")
+        raise OSError("sem espaço no dispositivo")
+
+    monkeypatch.setattr(Image.Image, "save", save_quebrado)
+    with pytest.raises(EncodeError, match="JPEG"):
+        codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
     assert not dst.exists()
+
+
+@pytest.mark.integration
+def test_jpeg_com_varias_imagens_codifica_so_a_primaria(tmp_path):
+    """MPO (foto de celular): abre e codifica; sai um JPEG comum de uma
+    imagem só. As secundárias e o XMP não são copiados."""
+    src = tmp_path / "multi.jpg"
+    primaria = Image.new("RGB", (64, 48), (200, 30, 30))
+    primaria.save(src, "MPO", save_all=True,
+                  append_images=[Image.new("RGB", (32, 24), (30, 30, 200))])
+    with Image.open(src) as img:
+        assert img.format == "MPO" and img.n_frames == 2   # a fixture é válida
+    dst = tmp_path / "s.jpg"
+    codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
+    with Image.open(dst) as saida:
+        assert saida.format == "JPEG" and saida.size == (64, 48)
+        assert saida.getpixel((32, 24))[0] > 150     # a imagem primária
 
 
 @pytest.mark.integration
