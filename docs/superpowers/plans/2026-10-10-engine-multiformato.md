@@ -28,8 +28,12 @@ comece o B antes de o A estar verde.
   `comprime-ai`. Renomear tocaria todos os imports sem entregar nada.
 - Commits em português, terminando com
   `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
-- Suíte atual: 209 passando + 1 xfail deliberado. O xfail deve continuar
-  XFAIL, nunca XPASS.
+- Suíte: o xfail deliberado deve continuar XFAIL, nunca XPASS.
+- **"Estático" se testa por `formato is not Formato.GIF`, nunca por
+  `frame_count == 1` nem por `duration == 0.0`.** Um GIF de quadro único com
+  delay diferente de zero legitimamente tem `duration > 0` e
+  `fps = 1/duration` — bate com o arquivo e com o `ffprobe`, e foi decidido
+  assim na Tarefa 2. Código que confundir as duas coisas erra nesse arquivo.
 
 ## Review Focus
 
@@ -489,6 +493,15 @@ corretamente, é o tipo de inversão que passa batido.
 `progressive=True` em todos os degraus: economiza alguns por cento sem custo
 de qualidade, então é padrão, não alavanca.
 
+**Atenção à orientação EXIF.** Verificado na Tarefa 2: `ImagemInfo.width` e
+`height` são as dimensões **armazenadas**, não as exibidas. Uma foto de
+celular com tag de orientação 6 está gravada 40×20 e é exibida 20×40. Como a
+escala deriva de `width`, um JPEG rotacionado escalaria pelo lado errado — e
+regravar sem preservar o EXIF giraria a foto do usuário. Decida
+explicitamente: ou aplique `ImageOps.exif_transpose` antes de escalar e grave
+sem o tag, ou preserve o EXIF intacto. Qualquer das duas serve; **o que não
+serve é escalar ignorando o tag e regravar sem ele.**
+
 - [ ] **Step 1: Escrever os testes que falham**
 
 ```python
@@ -512,6 +525,17 @@ def test_resultado_abre_como_jpeg_valido(tmp_path)
 
 @pytest.mark.integration
 def test_dimensoes_preservadas_quando_escala_e_cem(tmp_path)
+
+@pytest.mark.integration
+def test_foto_com_orientacao_exif_nao_sai_girada(tmp_path)
+    # JPEG 40x20 com tag de orientação 6 (exibido 20x40). Depois de
+    # comprimir, o resultado precisa ser exibido com a MESMA orientação
+    # da entrada — compare o que ImageOps.exif_transpose devolve para a
+    # entrada e para a saída, não o .size cru.
+
+@pytest.mark.integration
+def test_escala_de_foto_rotacionada_usa_o_lado_certo(tmp_path)
+    # a mesma foto com scale_pct=50: o lado EXIBIDO cai à metade
 ```
 
 - [ ] **Step 2: Rodar e confirmar que falham**
@@ -560,6 +584,11 @@ tempo, não de qualidade. Não entra na escada.
 `converter_webp` está ligado; GIF **nunca** converte (animação é outro
 problema e está fora de escopo); WebP de entrada segue WebP.
 
+**Não derive a extensão de `formato.value`.** Os valores do enum são
+minúsculos e `Formato.JPEG` vale `"jpeg"` — usar isso daria `.jpeg`, não o
+`.jpg` que todo mundo espera. Exponha um mapa explícito de formato para
+extensão e teste-o. O enum é identidade, não nome de arquivo.
+
 - [ ] **Step 1: Escrever os testes que falham**
 
 ```python
@@ -576,6 +605,13 @@ def test_formato_de_saida_nunca_converte_gif()
     # converter_webp=True e entrada GIF -> GIF
 
 def test_formato_de_saida_de_webp_e_webp()
+
+def test_extensao_de_jpeg_e_jpg_e_nao_jpeg()
+    # a armadilha: Formato.JPEG.value == "jpeg", mas a extensão é ".jpg"
+
+def test_mapa_de_extensoes_cobre_todos_os_formatos()
+    # formato novo sem extensão declarada deve falhar AQUI, não gerar
+    # arquivo sem extensão em tempo de execução
 
 @pytest.mark.integration
 def test_webp_comprime_de_verdade(tmp_path)
