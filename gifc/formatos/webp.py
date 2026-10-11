@@ -1,8 +1,11 @@
-"""O formato WebP: codificação com perda pelo Pillow.
+"""O formato WebP: codificação pelo Pillow, sem perda no degrau 0 e com perda
+nos demais.
 
 Serve a dois caminhos: um WebP de entrada, e um PNG ou JPEG convertido quando
-o usuário liga a conversão. Em ambos o WebP é recodificado com perda, mesmo
-no degrau 0 (qualidade 90).
+o usuário liga a conversão. O degrau 0 é WebP lossless: arte chapada
+(logotipo, captura de tela) fica muito menor em lossless do que em qualquer
+qualidade com perda, que chega a DOBRAR o tamanho do PNG. Para fotos é o
+contrário, e a escada com perda logo abaixo cuida delas.
 
 `method=6` vale para todos os degraus: é o ajuste mais lento e o que melhor
 comprime, ou seja, um botão de tempo e não de qualidade. Não é alavanca.
@@ -26,28 +29,36 @@ METODO = 6
 
 @dataclass(frozen=True)
 class Params:
-    """Um ponto no espaço de compressão do WebP."""
+    """Um ponto no espaço de compressão do WebP.
 
-    quality: int
+    `quality=None` é WebP sem perda (`lossless=True`): o extremo MENOS
+    agressivo da coluna, o mesmo papel do `colors=None` do PNG. Nos degraus
+    com perda é a qualidade do codificador, de 0 a 100.
+    """
+
+    quality: int | None
     scale_pct: int
 
 
 # Cada degrau é fracamente mais agressivo que o anterior: qualidade e escala
-# nunca aumentam.
+# nunca aumentam. O sem perda só existe a 100%: escalar já é perda, e um
+# degrau "sem perda a 70%" seria uma contradição.
 TABELA: tuple[Params, ...] = (
-    Params(90, 100),    # 0
-    Params(85, 100),    # 1
-    Params(80, 100),    # 2
-    Params(75, 100),    # 3
-    Params(70, 100),    # 4
-    Params(65, 100),    # 5
-    Params(60, 85),     # 6
-    Params(55, 85),     # 7
-    Params(50, 70),     # 8
-    Params(45, 50),     # 9
+    Params(None, 100),  # 0  sem perda
+    Params(90, 100),    # 1
+    Params(85, 100),    # 2
+    Params(80, 100),    # 3
+    Params(75, 100),    # 4
+    Params(70, 100),    # 5
+    Params(65, 100),    # 6
+    Params(60, 85),     # 7
+    Params(55, 85),     # 8
+    Params(50, 70),     # 9
+    Params(45, 50),     # 10
 )
 
-# Nos dois campos o valor MENOR é o mais agressivo.
+# Nos dois campos o valor MENOR é o mais agressivo (`None` conta como o maior
+# valor possível, ou seja, o menos agressivo).
 SENTIDOS: dict[str, str] = {
     "quality": "menor",
     "scale_pct": "menor",
@@ -111,7 +122,7 @@ def _para_srgb(
 
 
 def _para_webp(img: Image.Image) -> Image.Image:
-    """Leva `img` a RGB ou RGBA, os modos que o WebP grava.
+    """Leva `img` (já em 8 bits) a RGB ou RGBA, os modos que o WebP grava.
 
     - Sai sempre de P, L e 1 ANTES de escalar: o Pillow ignora o filtro de
       `resize` nesses modos e usa vizinho mais próximo, o que serrilha toda
@@ -123,7 +134,6 @@ def _para_webp(img: Image.Image) -> Image.Image:
       libwebp descarta sozinho um alfa todo opaco (medido: bytes idênticos aos
       do mesmo RGB).
     """
-    img = _para_8_bits(img)
     return img.convert("RGBA" if _tem_alfa(img) else "RGB")
 
 
@@ -171,13 +181,20 @@ def codificar(
             img = _escalar(img, params.scale_pct)
             # `resize` e as conversões não carregam o `info`: EXIF e perfil
             # vão explícitos ao `save`.
+            # Sem perda, o `quality` do Pillow deixa de ser fidelidade e vira
+            # esforço do compressor; fica no padrão (80), porque 100 levou
+            # 7x mais tempo sem ganho em foto (medido).
+            codec = (
+                {"lossless": True} if params.quality is None
+                else {"quality": params.quality}
+            )
             img.save(
                 dst,
                 format="WEBP",
-                quality=params.quality,
                 method=METODO,
                 exif=exif.tobytes() if len(exif) else b"",
                 icc_profile=perfil,
+                **codec,
             )
         if not dst.is_file():
             raise EncodeError("A codificação não produziu arquivo de saída.")

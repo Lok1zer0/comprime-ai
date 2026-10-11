@@ -8,6 +8,7 @@ de layout/construção — sem simular arrasto ou clique.
 
 from __future__ import annotations
 
+import gc
 import sys
 import threading
 import time
@@ -72,6 +73,23 @@ def test_parse_alvo_invalido_levanta_value_error(texto):
 # ---------- construção da janela (sem mainloop) ----------
 
 
+def _soltar_variaveis_tk(janela) -> None:
+    """Descarta as `StringVar`/`BooleanVar` da janela ANTES de destruí-la.
+
+    `tkinter.Variable.__del__` fala com o interpretador Tcl. Se o coletor de
+    lixo as recolhe depois do `destroy()` (ou numa thread que não é a
+    principal, o que acontece quando um teste posterior dispara o GC), o
+    resultado é um `PytestUnraisableExceptionWarning` ("main thread is not in
+    main loop"), atribuído a um teste que nada tem a ver com Tk. Soltar as
+    referências aqui, na thread principal e com a raiz ainda viva, faz o
+    `__del__` rodar no lugar certo.
+    """
+    for nome, valor in list(vars(janela).items()):
+        if isinstance(valor, tkinter.Variable):
+            delattr(janela, nome)
+    gc.collect()
+
+
 @pytest.fixture(scope="module")
 def _janela():
     """Uma única janela para todo o módulo.
@@ -99,6 +117,7 @@ def _janela():
     try:
         yield janela
     finally:
+        _soltar_variaveis_tk(janela)
         janela.destroy()
 
 

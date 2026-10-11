@@ -123,6 +123,30 @@ def _perfil_de_cinza(gama: float) -> bytes:
     return cab.ljust(128, b"\x00") + struct.pack(">I", len(tags)) + tabela + corpo
 
 
+def _degrau(**campos) -> Params:
+    """O ÚNICO degrau da tabela com estes valores (`quality=70`,
+    `scale_pct=50`, `quality=None` para o sem perda). Os testes escolhem o
+    degrau pela propriedade de que dependem, nunca pela posição: se a tabela
+    mudar, o teste ou segue medindo o que diz medir ou falha aqui."""
+    achados = [
+        p for p in TABELA
+        if all(getattr(p, k) == v for k, v in campos.items())
+    ]
+    assert len(achados) == 1, f"{campos} casa com {len(achados)} degraus"
+    return achados[0]
+
+
+def _mais_agressivo() -> Params:
+    return TABELA[-1]
+
+
+def _id_qualidade(q) -> str:
+    return "sem-perda" if q is None else f"q{q}"
+
+
+QUALIDADES_DE_ALFA = [None, 90, 65, 45]
+
+
 def _alfa_em(img: Image.Image, x: int, y: int) -> int:
     return img.convert("RGBA").getchannel("A").getpixel((x, y))
 
@@ -130,16 +154,20 @@ def _alfa_em(img: Image.Image, x: int, y: int) -> int:
 # --- a tabela --------------------------------------------------------------
 
 
-def test_tabela_tem_dez_degraus():
-    assert len(TABELA) == 10
-
-
 def test_tabela_e_exatamente_a_da_spec():
     esperada = [
-        (90, 100), (85, 100), (80, 100), (75, 100), (70, 100),
+        (None, 100), (90, 100), (85, 100), (80, 100), (75, 100), (70, 100),
         (65, 100), (60, 85), (55, 85), (50, 70), (45, 50),
     ]
     assert [(p.quality, p.scale_pct) for p in TABELA] == esperada
+
+
+def test_so_o_degrau_zero_e_sem_perda_e_so_a_cem_por_cento():
+    """Escalar já é perda: um degrau lossless com escala seria uma
+    contradição."""
+    sem_perda = [i for i, p in enumerate(TABELA) if p.quality is None]
+    assert sem_perda == [0]
+    assert TABELA[0].scale_pct == 100
 
 
 def test_sentidos_declarados_cobrem_todos_os_campos():
@@ -214,7 +242,9 @@ def test_webp_comprime_de_verdade(tmp_path):
     jpg = _foto_jpeg(tmp_path / "foto.jpg")
     for src, limite in ((png, 0.4), (jpg, 0.7)):
         dst = tmp_path / f"{src.stem}.webp"
-        tamanho = codificar(src, dst, TABELA[4], probe(src), SEM_FERRAMENTAS)
+        tamanho = codificar(
+            src, dst, _degrau(quality=70), probe(src), SEM_FERRAMENTAS
+        )
         assert tamanho == dst.stat().st_size
         assert tamanho < src.stat().st_size * limite, src.name
 
@@ -224,37 +254,45 @@ def test_qualidade_menor_gera_arquivo_menor(tmp_path):
     src = _foto_png(tmp_path / "foto.png")
     info = probe(src)
     tamanhos = [
-        codificar(src, tmp_path / f"s{i}.webp", TABELA[i], info, SEM_FERRAMENTAS)
-        for i in (0, 4, 5)
+        codificar(
+            src, tmp_path / f"s{i}.webp", _degrau(quality=q), info,
+            SEM_FERRAMENTAS,
+        )
+        for i, q in enumerate((None, 90, 70, 65))
     ]
     assert tamanhos == sorted(tamanhos, reverse=True)
-    assert len(set(tamanhos)) == 3
+    assert len(set(tamanhos)) == 4
 
 
 @pytest.mark.integration
 def test_qualidade_e_metodo_chegam_ao_pillow(tmp_path, monkeypatch):
-    """`method=6` é fixo em todos os degraus e a qualidade é a do degrau."""
+    """`method=6` é fixo em todos os degraus; o degrau sem perda pede
+    `lossless=True` (e nenhuma qualidade), os outros, a qualidade do degrau."""
     vistos = []
     original = Image.Image.save
 
     def espia(self, fp, format=None, **params):
-        vistos.append((params.get("quality"), params.get("method")))
+        vistos.append((
+            params.get("quality"), params.get("method"),
+            bool(params.get("lossless")),
+        ))
         return original(self, fp, format, **params)
 
     monkeypatch.setattr(Image.Image, "save", espia)
     src = _foto_png(tmp_path / "foto.png", (64, 48))
     info = probe(src)
-    for i in (0, 9):
+    for i, p in enumerate((_degrau(quality=None), _degrau(quality=90),
+                           _mais_agressivo())):
         vistos.clear()
-        codificar(src, tmp_path / f"s{i}.webp", TABELA[i], info, SEM_FERRAMENTAS)
-        assert vistos == [(TABELA[i].quality, 6)]
+        codificar(src, tmp_path / f"s{i}.webp", p, info, SEM_FERRAMENTAS)
+        assert vistos == [(p.quality, 6, p.quality is None)]
 
 
 @pytest.mark.integration
 def test_resultado_abre_como_webp_valido(tmp_path):
     src = _foto_png(tmp_path / "foto.png")
     dst = tmp_path / "out" / "saida.webp"   # a pasta ainda não existe
-    codificar(src, dst, TABELA[3], probe(src), SEM_FERRAMENTAS)
+    codificar(src, dst, _degrau(quality=80), probe(src), SEM_FERRAMENTAS)
     dados = dst.read_bytes()
     assert dados[:4] == b"RIFF" and dados[8:12] == b"WEBP"
     with Image.open(dst) as img:
@@ -264,13 +302,103 @@ def test_resultado_abre_como_webp_valido(tmp_path):
     assert probe(dst).formato is Formato.WEBP
 
 
+def _captura_de_tela(destino: Path) -> Path:
+    """Arte chapada com texto: o caso em que o WebP com perda DOBRA o PNG."""
+    img = Image.new("RGB", (640, 400), "white")
+    d = ImageDraw.Draw(img)
+    for y in range(0, 400, 24):
+        d.rectangle((20, y + 4, 400, y + 18), fill=(40, 90, 200))
+        d.text((30, y + 5), "texto de exemplo", fill="white")
+    img.save(destino)
+    return destino
+
+
+def _identicas(a: Image.Image, b: Image.Image) -> bool:
+    """Pixel a pixel, alfa incluído. O alfa é comparado como canal PRÓPRIO
+    (`getextrema` de RGBA misturaria cor e alfa) e a cor, vista sobre magenta:
+    o RGB escondido sob alfa 0 não aparece e o codificador pode descartá-lo."""
+    a, b = a.convert("RGBA"), b.convert("RGBA")
+    if a.size != b.size:
+        return False
+    alfa = ImageChops.difference(a.getchannel("A"), b.getchannel("A"))
+    visivel = ImageChops.difference(
+        _sobre(a, (255, 0, 255, 255)), _sobre(b, (255, 0, 255, 255))
+    )
+    return alfa.getextrema() == (0, 0) and all(
+        lo == hi == 0 for lo, hi in visivel.getextrema()
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "origem", ["png-foto", "png-alfa", "png-paleta", "jpg"]
+)
+def test_degrau_sem_perda_reproduz_os_pixels_da_fonte(tmp_path, origem):
+    """O único degrau do projeto em que a igualdade de pixels é afirmável:
+    decodifica a saída e compara com a fonte, alfa incluído."""
+    if origem == "png-foto":
+        src = _foto_png(tmp_path / "f.png")
+    elif origem == "png-alfa":
+        src = _logo_rgba(tmp_path / "f.png")
+    elif origem == "png-paleta":
+        with Image.open(_logo_rgba(tmp_path / "tmp.png")) as logo:
+            logo.convert("RGBA").quantize(
+                colors=16, method=Image.Quantize.FASTOCTREE
+            ).save(tmp_path / "f.png")
+        src = tmp_path / "f.png"
+    else:
+        src = _foto_jpeg(tmp_path / "f.jpg")
+    dst = tmp_path / "saida.webp"
+    codificar(src, dst, _degrau(quality=None), probe(src), SEM_FERRAMENTAS)
+    with Image.open(src) as o, Image.open(dst) as s:
+        original, saida = o.convert("RGBA"), s.convert("RGBA")
+    assert _identicas(original, saida)
+    if origem == "png-alfa":
+        assert saida.getchannel("A").getextrema() == (0, 255)   # há alfa de verdade
+
+
+def test_o_comparador_de_pixels_reconhece_diferencas():
+    """Trava o proprio `_identicas`: um teste de igualdade que sempre dissesse
+    'igual' não provaria nada."""
+    base = Image.new("RGBA", (8, 8), (10, 20, 30, 255))
+    assert _identicas(base, base.copy())
+    cor = base.copy()
+    cor.putpixel((3, 3), (11, 20, 30, 255))
+    assert not _identicas(base, cor)
+    alfa = base.copy()
+    alfa.putpixel((3, 3), (10, 20, 30, 254))
+    assert not _identicas(base, alfa)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("arte", ["logo", "captura"])
+def test_sem_perda_encolhe_arte_chapada_que_o_lossy_incharia(tmp_path, arte):
+    """A razão de existir do degrau 0: em arte chapada o WebP com perda sai
+    MAIOR que o PNG, e o sem perda, bem menor."""
+    if arte == "logo":
+        src = _logo_rgba(tmp_path / "a.png")
+    else:
+        src = _captura_de_tela(tmp_path / "a.png")
+    info = probe(src)
+    sem_perda = codificar(
+        src, tmp_path / "sp.webp", _degrau(quality=None), info, SEM_FERRAMENTAS
+    )
+    com_perda = codificar(
+        src, tmp_path / "cp.webp", _degrau(quality=90), info, SEM_FERRAMENTAS
+    )
+    assert sem_perda < src.stat().st_size * 0.7
+    assert sem_perda < com_perda / 2
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("nome", ["foto.png", "foto.jpg"])
 def test_nunca_toca_na_entrada(tmp_path, nome):
     src = tmp_path / nome
     (_foto_png if nome.endswith("png") else _foto_jpeg)(src)
     antes = _sha(src)
-    codificar(src, tmp_path / "s.webp", TABELA[9], probe(src), SEM_FERRAMENTAS)
+    codificar(
+        src, tmp_path / "s.webp", _mais_agressivo(), probe(src), SEM_FERRAMENTAS
+    )
     assert _sha(src) == antes
 
 
@@ -281,7 +409,7 @@ def test_falha_vira_encode_error_em_portugues_e_nao_deixa_saida(tmp_path):
     dst = tmp_path / "saida.webp"
     info = probe(_foto_png(tmp_path / "ok.png", (64, 48)))
     with pytest.raises(EncodeError, match="WebP"):
-        codificar(src, dst, TABELA[0], info, SEM_FERRAMENTAS)
+        codificar(src, dst, _degrau(quality=90), info, SEM_FERRAMENTAS)
     assert not dst.exists()
 
 
@@ -290,7 +418,9 @@ def test_webp_de_entrada_continua_webp(tmp_path):
     src = tmp_path / "entrada.webp"
     _textura().save(src, "WEBP", lossless=True)
     dst = tmp_path / "saida.webp"
-    tamanho = codificar(src, dst, TABELA[4], probe(src), SEM_FERRAMENTAS)
+    tamanho = codificar(
+        src, dst, _degrau(quality=70), probe(src), SEM_FERRAMENTAS
+    )
     assert tamanho < src.stat().st_size
     with Image.open(dst) as img:
         assert img.format == "WEBP" and img.size == (640, 480)
@@ -300,17 +430,18 @@ def test_webp_de_entrada_continua_webp(tmp_path):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("indice", [0, 5, 9], ids=["q90", "q65", "q45-escala50"])
-def test_png_transparente_convertido_mantem_alfa(tmp_path, indice):
+@pytest.mark.parametrize("quality", QUALIDADES_DE_ALFA, ids=_id_qualidade)
+def test_png_transparente_convertido_mantem_alfa(tmp_path, quality):
     """O defeito silencioso: um logo que volta com fundo preto ou branco passa
     por qualquer checagem de tamanho. Compara o alfa e as cores visíveis
     sobre dois fundos diferentes."""
     src = _logo_rgba(tmp_path / "logo.png")
     dst = tmp_path / "logo.webp"
-    codificar(src, dst, TABELA[indice], probe(src), SEM_FERRAMENTAS)
+    degrau = _degrau(quality=quality)
+    codificar(src, dst, degrau, probe(src), SEM_FERRAMENTAS)
     with Image.open(src) as o, Image.open(dst) as s:
         original, saida = o.convert("RGBA"), s.convert("RGBA")
-    if TABELA[indice].scale_pct != 100:
+    if degrau.scale_pct != 100:
         original = original.resize(saida.size, Image.Resampling.LANCZOS)
 
     # O canal alfa existe e o fundo continua TRANSPARENTE. Lê-se o canal "A"
@@ -337,7 +468,7 @@ def test_alfa_com_escala_nao_ganha_halo_escuro(tmp_path):
     src = tmp_path / "branco.png"
     img.save(src)
     dst = tmp_path / "branco.webp"
-    codificar(src, dst, TABELA[9], probe(src), SEM_FERRAMENTAS)  # 50%
+    codificar(src, dst, _degrau(scale_pct=50), probe(src), SEM_FERRAMENTAS)
     with Image.open(dst) as s:
         saida = s.convert("RGBA")
     alfa = saida.getchannel("A")
@@ -367,9 +498,11 @@ def test_png_em_paleta_com_transparencia_mantem_alfa(tmp_path):
     pal.save(src)
     with Image.open(src) as p:
         assert p.mode == "P" and "transparency" in p.info
-    for indice in (0, 9):   # sem e com escala
-        dst = tmp_path / f"paleta{indice}.webp"
-        codificar(src, dst, TABELA[indice], probe(src), SEM_FERRAMENTAS)
+    # sem perda, com perda sem escala, e com escala
+    for i, degrau in enumerate((_degrau(quality=None), _degrau(quality=90),
+                                _degrau(scale_pct=50))):
+        dst = tmp_path / f"paleta{i}.webp"
+        codificar(src, dst, degrau, probe(src), SEM_FERRAMENTAS)
         with Image.open(dst) as s:
             saida = s.convert("RGBA")
         assert _alfa_em(saida, saida.width - 3, 3) == 0
@@ -384,7 +517,7 @@ def test_png_com_cor_chave_transparente_mantem_alfa(tmp_path):
     src = tmp_path / "chave.png"
     img.save(src, transparency=(0, 255, 0))
     dst = tmp_path / "chave.webp"
-    codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
+    codificar(src, dst, _degrau(quality=90), probe(src), SEM_FERRAMENTAS)
     with Image.open(dst) as s:
         saida = s.convert("RGBA")
     assert _alfa_em(saida, 2, 2) == 0
@@ -398,7 +531,7 @@ def test_cinza_com_alfa_mantem_alfa(tmp_path):
     src = tmp_path / "la.png"
     img.save(src)
     dst = tmp_path / "la.webp"
-    codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
+    codificar(src, dst, _degrau(quality=90), probe(src), SEM_FERRAMENTAS)
     with Image.open(dst) as s:
         saida = s.convert("RGBA")
     assert _alfa_em(saida, 2, 2) == 0
@@ -414,7 +547,7 @@ def test_cinza_com_cor_chave_e_perfil_de_cinza_mantem_alfa(tmp_path):
     src = tmp_path / "chave_cinza.png"
     img.save(src, transparency=0, icc_profile=_perfil_de_cinza(1.0))
     dst = tmp_path / "saida.webp"
-    codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
+    codificar(src, dst, _degrau(quality=90), probe(src), SEM_FERRAMENTAS)
     with Image.open(dst) as s:
         saida = s.convert("RGBA")
     assert _alfa_em(saida, 2, 2) == 0
@@ -429,7 +562,7 @@ def test_perfil_de_cinza_e_aplicado_na_conversao_para_rgb(tmp_path):
     src = tmp_path / "gama.png"
     Image.new("L", (64, 64), 128).save(src, icc_profile=_perfil_de_cinza(1.0))
     dst = tmp_path / "saida.webp"
-    codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
+    codificar(src, dst, _degrau(quality=90), probe(src), SEM_FERRAMENTAS)
     with Image.open(dst) as s:
         assert s.mode == "RGB"
         assert (s.info.get("icc_profile") or b"")[16:20] != b"GRAY"
@@ -446,7 +579,7 @@ def test_rgba_totalmente_opaco_sai_sem_canal_alfa(tmp_path):
     src = tmp_path / "opaco.png"
     img.save(src)
     dst = tmp_path / "opaco.webp"
-    codificar(src, dst, TABELA[2], probe(src), SEM_FERRAMENTAS)
+    codificar(src, dst, _degrau(quality=85), probe(src), SEM_FERRAMENTAS)
     assert b"ALPH" not in dst.read_bytes()
     with Image.open(dst) as s:
         assert s.mode == "RGB"
@@ -459,7 +592,7 @@ def test_rgba_totalmente_opaco_sai_sem_canal_alfa(tmp_path):
 def test_dimensoes_preservadas_quando_escala_e_cem(tmp_path):
     src = _foto_png(tmp_path / "foto.png")
     dst = tmp_path / "saida.webp"
-    codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
+    codificar(src, dst, _degrau(quality=90), probe(src), SEM_FERRAMENTAS)
     with Image.open(dst) as img:
         assert img.size == (640, 480)
 
@@ -469,7 +602,7 @@ def test_escala_reduz_a_largura_pela_regra_do_projeto(tmp_path):
     src = _foto_png(tmp_path / "foto.png")
     info = probe(src)
     dst = tmp_path / "saida.webp"
-    codificar(src, dst, TABELA[9], info, SEM_FERRAMENTAS)  # 50%
+    codificar(src, dst, _degrau(scale_pct=50), info, SEM_FERRAMENTAS)
     with Image.open(dst) as img:
         assert img.width == target_width(info.width, 50) == 320
         assert img.height == 240
@@ -492,13 +625,15 @@ def _listras(destino: Path, modo: str) -> Path:
 @pytest.mark.parametrize("modo", ["RGB", "P", "L"])
 def test_escala_usa_filtro_de_qualidade_e_nao_vizinho_mais_proximo(tmp_path, modo):
     """Linhas finas reduzidas pela metade com vizinho mais próximo ficam
-    serrilhadas (preto/branco puro); com LANCZOS viram cinza. O Pillow ignora
-    o filtro em modo P e L: o caminho tem de sair deles antes de escalar."""
+    serrilhadas (preto/branco puro); com LANCZOS viram cinza. O Pillow cai no
+    vizinho mais próximo em modo P (e 1): o caminho tem de sair deles antes de
+    escalar. O caso L NÃO tem essa armadilha (o Pillow respeita o filtro em
+    L); fica como guarda de regressão do resultado, não do contorno."""
     src = _listras(tmp_path / "listras.png", modo)
     with Image.open(src) as o:
         assert o.mode == modo
     dst = tmp_path / "saida.webp"
-    codificar(src, dst, TABELA[9], probe(src), SEM_FERRAMENTAS)
+    codificar(src, dst, _degrau(scale_pct=50), probe(src), SEM_FERRAMENTAS)
     with Image.open(dst) as saida:
         recorte = saida.convert("L").crop((40, 40, 280, 200))
     assert 90 < ImageStat.Stat(recorte).mean[0] < 165   # cinza médio
@@ -521,8 +656,8 @@ def _perfil_distinguivel() -> bytes:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("origem", ["png", "jpg", "png-alfa"])
-@pytest.mark.parametrize("indice", [0, 9])
-def test_perfil_icc_e_preservado(tmp_path, origem, indice):
+@pytest.mark.parametrize("quality", [None, 90, 45], ids=_id_qualidade)
+def test_perfil_icc_e_preservado(tmp_path, origem, quality):
     perfil = _perfil_distinguivel()
     if origem == "png":
         src = tmp_path / "f.png"
@@ -535,7 +670,7 @@ def test_perfil_icc_e_preservado(tmp_path, origem, indice):
         with Image.open(_logo_rgba(tmp_path / "tmp.png")) as logo:
             logo.save(src, icc_profile=perfil)
     dst = tmp_path / "saida.webp"
-    codificar(src, dst, TABELA[indice], probe(src), SEM_FERRAMENTAS)
+    codificar(src, dst, _degrau(quality=quality), probe(src), SEM_FERRAMENTAS)
     with Image.open(dst) as s:
         assert s.info.get("icc_profile") == perfil
 
@@ -549,7 +684,7 @@ def test_jpeg_cmyk_vira_rgb_e_nao_leva_o_perfil_cmyk(tmp_path):
     src = tmp_path / "cmyk.jpg"
     _textura().convert("CMYK").save(src, "JPEG", quality=95, icc_profile=bytes(falso))
     dst = tmp_path / "saida.webp"
-    codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
+    codificar(src, dst, _degrau(quality=90), probe(src), SEM_FERRAMENTAS)
     with Image.open(dst) as s:
         assert s.mode == "RGB"
         assert (s.info.get("icc_profile") or b"")[16:20] != b"CMYK"
@@ -564,7 +699,7 @@ def test_jpeg_cinza_vira_webp_rgb(tmp_path):
     src = tmp_path / "cinza.jpg"
     _degrade_horizontal().save(src, "JPEG")
     dst = tmp_path / "saida.webp"
-    codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
+    codificar(src, dst, _degrau(quality=90), probe(src), SEM_FERRAMENTAS)
     with Image.open(dst) as s:
         assert s.mode == "RGB"
         esquerda, direita = s.getpixel((5, 50)), s.getpixel((195, 50))
@@ -578,7 +713,7 @@ def test_png_cinza_de_16_bits_converte(tmp_path):
     src = tmp_path / "c16.png"
     img.save(src)
     dst = tmp_path / "saida.webp"
-    codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
+    codificar(src, dst, _degrau(quality=90), probe(src), SEM_FERRAMENTAS)
     with Image.open(dst) as s:
         cinza = s.convert("L")
     assert cinza.getpixel((5, 50)) < 40 and cinza.getpixel((195, 50)) > 215
@@ -597,17 +732,18 @@ def _foto_rotulada(destino: Path, tamanho=(40, 20), orientacao=6) -> Path:
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("indice", [0, 9])
-def test_foto_com_orientacao_exif_nao_sai_girada(tmp_path, indice):
+@pytest.mark.parametrize("quality", [None, 90, 45], ids=_id_qualidade)
+def test_foto_com_orientacao_exif_nao_sai_girada(tmp_path, quality):
     src = _foto_rotulada(tmp_path / "girada.jpg", (400, 200))
     assert _exibida(src).size == (200, 400)
     dst = tmp_path / "saida.webp"
-    codificar(src, dst, TABELA[indice], probe(src), SEM_FERRAMENTAS)
+    degrau = _degrau(quality=quality)
+    codificar(src, dst, degrau, probe(src), SEM_FERRAMENTAS)
     saida = _exibida(dst)
     assert saida.height == 2 * saida.width           # continua retrato
-    if TABELA[indice].scale_pct != 100:
+    if degrau.scale_pct != 100:
         # a escala parte da largura EXIBIDA (200), não da armazenada (400)
-        assert saida.width == target_width(200, TABELA[indice].scale_pct)
+        assert saida.width == target_width(200, degrau.scale_pct)
     topo = saida.getpixel((saida.width // 2, saida.height // 4))
     base = saida.getpixel((saida.width // 2, 3 * saida.height // 4))
     assert topo[0] > 150 > topo[2] and base[2] > 150 > base[0]
@@ -622,6 +758,6 @@ def test_exif_da_foto_e_mantido(tmp_path):
     src = tmp_path / "f.jpg"
     _textura((200, 150)).save(src, "JPEG", quality=95, exif=exif)
     dst = tmp_path / "saida.webp"
-    codificar(src, dst, TABELA[0], probe(src), SEM_FERRAMENTAS)
+    codificar(src, dst, _degrau(quality=90), probe(src), SEM_FERRAMENTAS)
     with Image.open(dst) as s:
         assert s.getexif().get(0x010F) == "Camera Teste"
