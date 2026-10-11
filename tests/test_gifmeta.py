@@ -156,7 +156,7 @@ def test_truncado_no_meio_de_um_sub_bloco_levanta_erro():
 
 def test_truncado_no_meio_dos_dados_de_imagem_levanta_erro():
     dados = _tela() + _quadro(dados=b"z" * 50)[:-10]
-    with pytest.raises(GifMetaError):
+    with pytest.raises(GifMetaError, match="nos dados de imagem, no meio de um sub-bloco"):
         parse(dados)
 
 
@@ -179,6 +179,26 @@ def test_truncado_apos_marcador_de_extensao_levanta_erro():
 def test_truncado_no_gce_levanta_erro():
     with pytest.raises(GifMetaError, match="controle gráfico"):
         parse(_tela() + b"\x21\xf9\x04\x00\x0a")
+
+
+@pytest.mark.parametrize("tamanho", [0, 2, 3, 5])
+def test_gce_com_tamanho_diferente_de_4_levanta_erro(tamanho: int):
+    # um GCE malformado não pode deixar o delay pendente anterior vazar
+    # para outro quadro: GCE(7) + GCE de tamanho errado + quadro
+    ruim = b"\x21\xf9" + bytes([tamanho]) + bytes(tamanho) + bytes(1)
+    offset = len(_tela()) + len(_gce(7))
+    dados = _tela() + _gce(7) + ruim + _quadro() + TRAILER
+    with pytest.raises(GifMetaError, match=rf"controle gráfico malformada no byte {offset}: .*{tamanho}"):
+        parse(dados)
+
+
+def test_dimensoes_zero_sao_aceitas_por_enquanto():
+    # Decisão registrada: o parser reporta o que o arquivo diz; quem consome
+    # decide o que fazer com 0x0. Se isto passar a levantar erro, que seja
+    # deliberado e este teste mude junto.
+    gif = parse(_tela(0, 0) + _quadro() + TRAILER)
+    assert (gif.width, gif.height) == (0, 0)
+    assert gif.frame_count == 1
 
 
 def test_bloco_desconhecido_levanta_erro():
@@ -206,19 +226,49 @@ def test_bytes_apos_o_trailer_sao_ignorados():
     assert gif.frame_count == 1
 
 
-@pytest.mark.parametrize("corte", range(1, 120))
-def test_qualquer_truncamento_levanta_apenas_gifmetaerror(corte: int):
-    completo = (
-        _tela(tabela_n=1)
-        + b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00"
-        + _gce(5)
-        + _quadro(tabela_local_n=1, dados=b"q" * 40)
-        + TRAILER
-    )
-    try:
-        parse(completo[:corte])
-    except GifMetaError:
-        pass  # qualquer outra exceção (IndexError, struct.error) falha o teste
+# Blocos do GIF de varredura: (bytes, quadros lidos até aqui, delay somado até aqui).
+# Os totais esperados são escritos à mão, independentes do parser.
+_BLOCOS_VARREDURA = [
+    (_tela(64, 48, tabela_n=1), 0, 0),
+    (b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00", 0, 0),
+    (_gce(5), 0, 0),
+    (_quadro(tabela_local_n=1, dados=b"q" * 40), 1, 5),
+    (b"\x21\xfe" + _subblocos(b"comentario"), 1, 5),
+    (_gce(3), 1, 5),
+    (_quadro(), 2, 8),
+    (_gce(9), 2, 8),  # GCE órfão: seu delay não pertence a nenhum quadro
+    (TRAILER, 2, 8),
+]
+_GIF_VARREDURA = b"".join(b for b, _, _ in _BLOCOS_VARREDURA)
+
+# Fronteiras limpas derivadas dos comprimentos dos blocos montados, nunca
+# um literal: editar o fixture não pode silenciar a metade interessante.
+_FRONTEIRAS: dict[int, tuple[int, int]] = {}
+_acumulado = 0
+for _bytes, _quadros, _delay in _BLOCOS_VARREDURA:
+    _acumulado += len(_bytes)
+    _FRONTEIRAS[_acumulado] = (_quadros, _delay)
+
+
+@pytest.mark.parametrize("corte", range(len(_GIF_VARREDURA) + 1))
+def test_truncamento_em_qualquer_ponto(corte: int):
+    """Corte numa fronteira limpa com >=1 quadro é aceito com o resultado exato;
+    qualquer outro corte (dentro de um bloco, ou sem quadros lidos) levanta
+    GifMetaError. Nunca IndexError nem struct.error."""
+    quadros, delay = _FRONTEIRAS.get(corte, (0, 0))
+    if quadros >= 1:
+        esperado = GifRaw(width=64, height=48, frame_count=quadros, total_delay_cs=delay)
+        assert parse(_GIF_VARREDURA[:corte]) == esperado
+    else:
+        with pytest.raises(GifMetaError):
+            parse(_GIF_VARREDURA[:corte])
+
+
+def test_varredura_cobre_as_duas_metades():
+    # Guarda contra o fixture degenerar: precisa haver cortes aceitos e rejeitados.
+    aceitos = [c for c, (q, _) in _FRONTEIRAS.items() if q >= 1]
+    assert len(aceitos) >= 4
+    assert min(aceitos) > len(_BLOCOS_VARREDURA[0][0])
 
 
 @pytest.mark.slow

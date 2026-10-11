@@ -92,9 +92,13 @@ def parse(dados: bytes) -> GifRaw:
             pos += 1
             if rotulo == _GCE:
                 _exige(dados, pos, 1, "no tamanho da extensão de controle gráfico")
-                if dados[pos] >= 3:
-                    _exige(dados, pos, 4, "na extensão de controle gráfico")
-                    atraso_pendente = _u16(dados, pos + 2)
+                if dados[pos] != 4:
+                    raise GifMetaError(
+                        f"extensão de controle gráfico malformada no byte {pos - 2}: "
+                        f"tamanho do bloco {dados[pos]} em vez de 4"
+                    )
+                _exige(dados, pos, 5, "na extensão de controle gráfico")
+                atraso_pendente = _u16(dados, pos + 2)
             pos = _pular_subblocos(dados, pos, f"na extensão 0x{rotulo:02X}")
 
         elif bloco == _IMAGEM:
