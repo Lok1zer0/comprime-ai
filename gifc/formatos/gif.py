@@ -29,8 +29,9 @@ class Params:
 # Cada degrau é fracamente mais agressivo que o anterior em todas as
 # dimensões simultaneamente: cores nunca aumentam, lossy nunca diminui,
 # escala nunca aumenta, fps nunca aumenta (None é o maior fps).
-# Isto garante que o tamanho codificado é monotonicamente não-crescente
-# ao longo da escada, o que torna a busca binária de lower bound válida.
+# Isto NÃO garante, sozinho, que o tamanho codificado seja não-crescente (ver
+# `SEM_PERDA` abaixo e `tests/test_curvas.py`), que é o que a busca binária de
+# lower bound supõe.
 TABELA: tuple[Params, ...] = (
     Params(256, 0, 100, None),      # 0
     Params(256, 20, 100, None),     # 1
@@ -62,8 +63,10 @@ SENTIDOS: dict[str, str] = {
     "fps": "menor",
 }
 
-# Nenhum degrau do GIF é sem perda: até o 0 repaletiza pelo ffmpeg. A curva
-# de tamanho é monótona por toda a escada (medido em `tests/test_formato_gif.py`).
+# Nenhum degrau do GIF é sem perda: até o 0 repaletiza pelo ffmpeg. Isso NÃO
+# quer dizer que a curva de tamanho seja monótona: `tests/test_curvas.py` mede
+# inversões, p.ex. na passagem de 100% para 85% de escala (+5,3% num GIF de
+# barras). Não são um prefixo, e ficam documentadas lá.
 SEM_PERDA: tuple[int, ...] = ()
 
 # O valor MENOS agressivo de cada coluna: o que ela assume quando o usuário

@@ -185,7 +185,9 @@ def test_attempt_bem_sucedido_nao_carrega_erro():
         "MENOR que os com perda logo abaixo (test_formato_webp afirma essa "
         "desigualdade; ver o teste que a liga à busca, abaixo). A orquestração "
         "(compress.buscar) por isso codifica o prefixo SEM_PERDA de cada formato "
-        "fora da bisecção e só bisecta a cauda. find_best em si continua com a "
+        "fora da bisecção e só bisecta a cauda. A cauda NÃO é garantidamente "
+        "monótona: tests/test_curvas.py mede inversões nela (PNG, WebP e GIF), "
+        "que a orquestração não trata. find_best em si continua com a "
         "pré-condição de monotonia: este xfail documenta o contrato, não um "
         "defeito a corrigir aqui."
     ),

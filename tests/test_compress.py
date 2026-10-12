@@ -12,6 +12,7 @@ from gifc.formatos.base import EncodeError
 from gifc.ladder import Toggles
 from gifc.probe import Formato, ImagemInfo
 from gifc.tools import Tools
+from tests.imagens import captura_de_tela
 
 TODOS = Toggles(True, True, True, True)
 
@@ -952,21 +953,7 @@ def test_orcamento_de_encodes_no_pior_caso(
     assert len(codificados) == esperado, codificados
 
 
-def _captura_de_tela(largura: int = 1280, altura: int = 720) -> Image.Image:
-    """Arte chapada como uma captura de tela: fundo liso, texto sem
-    degradê e, embaixo, uma hachura de duas cores. É o tipo de imagem em que
-    o WebP sem perda é DEZENAS de vezes menor que o q90."""
-    img = Image.new("RGB", (largura, altura), (255, 255, 255))
-    d = ImageDraw.Draw(img)
-    d.rectangle((0, 0, largura, altura // 16), fill=(32, 33, 36))
-    d.rectangle((0, altura // 16, largura // 6, altura), fill=(243, 244, 246))
-    for i in range(altura // 30):
-        d.text((10, altura // 12 + i * 20), f"Item de menu numero {i}", fill=(60, 60, 60))
-    for y in range(altura * 2 // 3, altura - 4, 2):
-        d.line((largura // 5, y, largura - 20, y), fill=(0, 0, 0))
-    for x in range(largura // 2, largura - 20, 8):
-        d.line((x, altura * 2 // 3, x, altura - 4), fill=(200, 30, 30))
-    return img
+_captura_de_tela = captura_de_tela
 
 
 @pytest.mark.integration

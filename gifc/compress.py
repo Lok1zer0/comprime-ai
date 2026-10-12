@@ -12,7 +12,7 @@ from typing import Any
 from gifc import formatos
 from gifc.formatos.base import EncodeError
 from gifc.ladder import Toggles, aplicar_toggles
-from gifc.probe import Formato, probe
+from gifc.probe import Formato, ImagemInfo, probe
 from gifc.search import (
     FALHOU,
     Attempt,
@@ -81,6 +81,27 @@ def _try_path(tmpdir: Path, index: int, formato: Formato) -> Path:
     porque o Pillow escolhe o formato de saída por ela.
     """
     return tmpdir / f"try_{index}{formatos.extensao(formato)}"
+
+
+def montar_escada(
+    formato: Formato, info: ImagemInfo, toggles: Toggles, tools: Tools
+) -> tuple[list[Any], int]:
+    """A escada que se percorre para `formato`, e quantos dos seus primeiros
+    degraus são o prefixo sem perda (`SEM_PERDA`) que a bisecção não pode
+    atravessar.
+
+    O prefixo é calculado sobre a MESMA transformação da escada inteira (os
+    toggles efetivos e a deduplicação): a deduplicação mantém o primeiro de
+    cada grupo de degraus iguais e o prefixo é o começo da tabela, então o
+    dele é o começo da escada.
+    """
+    modulo = formatos.para(formato)
+    toggles = formatos.toggles_efetivos(formato, toggles, tools)
+    escada = aplicar_toggles(modulo.TABELA, info, toggles, modulo.NEUTROS)
+    prefixo = aplicar_toggles(
+        modulo.TABELA[: len(modulo.SEM_PERDA)], info, toggles, modulo.NEUTROS
+    )
+    return escada, len(prefixo)
 
 
 def _sondar(
@@ -185,16 +206,7 @@ def compress_file(
 
     saida = formatos.formato_de_saida(info.formato, converter_webp)
     modulo = formatos.para(saida)
-    toggles = formatos.toggles_efetivos(saida, toggles, tools)
-    escada = aplicar_toggles(modulo.TABELA, info, toggles, modulo.NEUTROS)
-    # O prefixo sem perda, depois dos toggles: dedupe mantém o primeiro de
-    # cada grupo e o prefixo é o começo da tabela, então o dele é o começo da
-    # escada. Aplicar os toggles só a ele dá o tamanho certo.
-    n_prefixo = len(
-        aplicar_toggles(
-            modulo.TABELA[: len(modulo.SEM_PERDA)], info, toggles, modulo.NEUTROS
-        )
-    )
+    escada, n_prefixo = montar_escada(saida, info, toggles, tools)
     # Um alvo >= à entrada não é restrição: pede-se "menor", não "qualquer
     # coisa abaixo de 10 MB". Sem este limite um degrau de alta qualidade
     # MAIOR que a entrada (o sem perda do WebP numa foto) caberia no alvo,
