@@ -10,6 +10,9 @@ venv/
 
 # Saídas de teste
 *_comprimido*.gif
+*_comprimido*.png
+*_comprimido*.jpg
+*_comprimido*.webp
 
 # Scratch do subagent-driven-development
 .superpowers/

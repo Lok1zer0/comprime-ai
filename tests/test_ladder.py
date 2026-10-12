@@ -169,9 +169,9 @@ def test_aplicar_toggles_nao_exige_neutro_de_coluna_sem_toggle():
         (800, 85, 680),
         (800, 70, 560),
         (800, 50, 400),
-        (801, 85, 680),   # arredonda para par
+        (801, 85, 680),   # 680,85 trunca para 680, que já é par
         (10, 50, 16),     # respeita o mínimo
-        (33, 100, 34),    # ímpar vira par
+        (33, 100, 34),    # ímpar sobe para o par seguinte
     ],
 )
 def test_target_width(largura, pct, esperado):
@@ -586,3 +586,4 @@ def test_degrau_sem_perda_que_um_toggle_altera_falha():
     sem perda é incoerente, e a verificação enxerga."""
     with pytest.raises(AssertionError, match="toggle altera"):
         verificar_sem_perda(_falso(SEM_PERDA=(0, 1)), "teste")
+

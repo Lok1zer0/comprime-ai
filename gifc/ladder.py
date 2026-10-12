@@ -42,7 +42,7 @@ ALAVANCAS: dict[str, str] = {
 
 
 def target_width(width: int, scale_pct: int) -> int:
-    """Largura alvo: arredondada para par, com piso de 16px."""
+    """Largura alvo: truncada e levada ao par seguinte, com piso de 16px."""
     bruta = width * scale_pct / 100
     par = int(bruta) + (int(bruta) % 2)
     return max(LARGURA_MINIMA, par)

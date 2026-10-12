@@ -1,4 +1,4 @@
-"""Entrypoint do compressor de GIF."""
+"""Entrypoint do compressor de imagens (GIF, PNG, JPEG e WebP)."""
 
 from __future__ import annotations
 
