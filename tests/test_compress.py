@@ -696,21 +696,43 @@ WEBP_FLAT = [1_200, 9_000, 8_000, 7_000, 6_000, 5_500, 5_200, 4_000, 3_500, 3_00
 
 
 @pytest.mark.parametrize("alvo", [10_000_000, 5_000])   # 5.000 = a entrada
-def test_entrada_que_ja_cabe_no_alvo_so_considera_o_sem_perda(
+def test_conversao_pedida_com_alvo_folgado_percorre_a_escada_inteira(
     tmp_path, monkeypatch, alvo
 ):
-    """O sem perda do WebP (9.000 B) é maior que a entrada de 5.000 B: não há
-    ganho de graça, e os degraus com perda, que dariam, NÃO são tentados. O
-    original volta, e `hit_target` é contra o alvo do usuário."""
+    """Marcar "Converter para WebP" é o consentimento para recodificar: com a
+    entrada já dentro do alvo (o padrão de 10 MB) a conversão NÃO pode virar um
+    "só se for de graça". O sem perda do WebP (9.000 B) é maior que a entrada
+    de 5.000 B; o limite da busca é "menor que a entrada", então vence o degrau
+    de maior qualidade que de fato encolhe: o 1 (4.800 B)."""
     mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.JPEG)
     assert alvo >= info.size_bytes
     codificados = _curva_falsa(monkeypatch, formato_webp, WEBP_FOTO)
 
     r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
+    assert len(codificados) > 1                      # foi além do degrau 0
+    assert r.already_optimized is False
+    assert r.formato_saida is Formato.WEBP and r.dst.suffix == ".webp"
+    assert r.params == formato_webp.TABELA[1] and r.final_bytes == 4_800
+    assert r.hit_target is True                      # contra o alvo do usuário
+
+
+@pytest.mark.parametrize("alvo", [10_000_000, 5_000])
+def test_mesmo_formato_com_alvo_folgado_so_considera_o_degrau_zero(
+    tmp_path, monkeypatch, alvo
+):
+    """O contraponto, sem conversão: um WebP com perda que já cabe. O sem
+    perda (9.000 B) é maior que ele, não há nada de graça, e os degraus com
+    perda, que dariam, NÃO são tentados. O original volta."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.WEBP)
+    assert alvo >= info.size_bytes
+    codificados = _curva_falsa(monkeypatch, formato_webp, WEBP_FOTO)
+
+    r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS)
+
     assert codificados == [0]
     assert r.already_optimized is True and r.params is None
-    assert r.formato_saida is Formato.JPEG
+    assert r.formato_saida is Formato.WEBP
     assert r.dst.read_bytes() == src.read_bytes()
     assert r.hit_target is True
     assert [a.index for a in r.attempts] == [0]
@@ -959,21 +981,20 @@ def test_png_ja_otimizado_pela_ferramenta_nao_e_quantizado_de_novo(tools, tmp_pa
 
 
 @pytest.mark.integration
-def test_foto_com_conversao_e_alvo_folgado_nao_e_degradada(tmp_path):
-    """JPEG, alvo padrão de 10 MB, conversão ligada: a foto já cabe, e o WebP
-    sem perda é MAIOR que ela. Nada de graça a fazer: o JPEG volta intacto,
-    em vez de ser reencodado com perda a q90 só para ficar menor."""
+def test_foto_com_conversao_e_alvo_folgado_converte_de_verdade(tmp_path):
+    """JPEG, alvo padrão de 10 MB, conversão ligada: a foto já cabe, mas a caixa
+    foi marcada. Entrega-se o WebP de maior qualidade que fica menor que ela,
+    não o JPEG de volta."""
     src = tmp_path / "foto.jpg"
     _textura((640, 480)).save(src, "JPEG", quality=95)
-    original = src.read_bytes()
+    original = src.stat().st_size
 
     r = compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
-    assert r.already_optimized is True and r.params is None
-    assert r.formato_saida is Formato.JPEG and r.dst.suffix == ".jpg"
-    assert r.dst.read_bytes() == original
-    assert r.hit_target is True
-    assert not list(tmp_path.glob("*.webp"))
+    assert r.already_optimized is False and r.hit_target is True
+    assert r.formato_saida is Formato.WEBP and r.dst.suffix == ".webp"
+    assert r.final_bytes < original * 0.8, (r.final_bytes, original)
+    assert r.params != formato_webp.TABELA[0]       # o sem perda é maior que a foto
 
 
 @pytest.mark.integration

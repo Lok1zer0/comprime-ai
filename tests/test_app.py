@@ -976,7 +976,7 @@ def test_original_mantido_com_conversao_explica_que_o_webp_nao_ajudou(entrada):
     """Com a caixa ligada o arquivo nunca percorreu a escada do próprio
     formato: "já estava otimizado" seria mentira sobre ela. O texto explica
     por que o original ficou, sem prometer um `.webp` que não existe."""
-    r = _mantido(entrada, hit_target=False)   # o original não cabe no alvo
+    r = _mantido(entrada)
     texto = _texto_resultado(r, converteu_webp=True)
     rotulo = "PNG" if entrada is Formato.PNG else "JPEG"
     assert "nenhum degrau de WebP ficou menor" in texto
@@ -984,21 +984,6 @@ def test_original_mantido_com_conversao_explica_que_o_webp_nao_ajudou(entrada):
     assert "já estava otimizado" not in texto
     assert r.dst.name in texto and ".webp" not in texto
     assert "sem perda" not in texto
-
-
-@pytest.mark.parametrize("entrada", [Formato.PNG, Formato.JPEG])
-def test_original_que_ja_cabe_no_alvo_nao_diz_que_nenhum_webp_ficou_menor(entrada):
-    """Com a entrada dentro do alvo só o degrau de WebP de maior qualidade é
-    medido: dizer que "nenhum degrau de WebP ficou menor" seria afirmar o que
-    não se mediu."""
-    r = _mantido(entrada, hit_target=True)
-    texto = _texto_resultado(r, converteu_webp=True)
-    rotulo = "PNG" if entrada is Formato.PNG else "JPEG"
-    assert "já cabe no alvo" in texto and "WebP de maior qualidade" in texto
-    assert "sem perda" not in texto   # nem para o PNG, nem para o JPEG
-    assert "nenhum degrau" not in texto and "já estava otimizado" not in texto
-    assert f"a escada de {rotulo} não foi tentada" in texto
-    assert r.dst.name in texto and ".webp" not in texto
 
 
 @pytest.mark.parametrize("entrada", [Formato.GIF, Formato.WEBP])
@@ -1024,12 +1009,12 @@ def test_com_conversao_que_funcionou_o_texto_nao_explica_nada():
 def test_log_resultado_usa_a_flag_do_lote_gravada_em_processar(app):
     """`_log_resultado` não recebe a caixa: lê o que `_processar` gravou."""
     app._lote_converteu = True
-    app._log_resultado(_mantido(hit_target=False))
+    app._log_resultado(_mantido())
     app._lote_converteu = False
     app._log_resultado(_mantido())
     textos = [app.log.item(i, "text") for i in app.log.get_children()]
     assert "nenhum degrau de WebP ficou menor" in textos[0]
-    assert "já estava otimizado" in textos[-1]
+    assert "já estava otimizado" in textos[1]
 
 
 def test_processar_grava_a_flag_do_lote(app, _lote_falso):
@@ -1184,6 +1169,5 @@ def test_texto_descreve_o_arquivo_escrito_e_nao_o_pedido(
     else:
         assert r.dst.suffix == ".png"
         assert ".webp" not in texto
-        # O PNG de 10 MB cabe no alvo: só o sem perda foi medido.
-        assert "o original já cabe no alvo" in texto
+        assert "nenhum degrau de WebP ficou menor" in texto
         assert "cópia mantida (PNG)" in texto

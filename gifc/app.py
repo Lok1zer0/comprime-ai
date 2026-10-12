@@ -234,16 +234,6 @@ def _texto_resultado(r: CompressResult, converteu_webp: bool = False) -> str:
             and r.formato_entrada in _CONVERSIVEIS
             and r.formato_saida is not Formato.WEBP
         ):
-            if r.hit_target:
-                # O original já cabe no alvo: só o degrau de WebP de maior
-                # qualidade foi medido (os outros custariam qualidade sem
-                # ganho necessário). Sem "sem perda" no texto: para um JPEG de
-                # entrada a interface nunca promete ausência de perda.
-                return (
-                    f"{r.src.name}: o original já cabe no alvo e o WebP de maior "
-                    f"qualidade não ficou menor; cópia mantida ({rotulo}), a "
-                    f"escada de {rotulo} não foi tentada → {r.dst.name}"
-                )
             return (
                 f"{r.src.name}: nenhum degrau de WebP ficou menor que o original; "
                 f"cópia mantida ({rotulo}), a escada de {rotulo} não foi tentada "

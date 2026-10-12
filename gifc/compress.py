@@ -263,21 +263,29 @@ def compress_file(
     saida = formatos.formato_de_saida(info.formato, converter_webp)
     modulo = formatos.para(saida)
     escada, n_prefixo = montar_escada(saida, info, toggles, tools)
-    # Dois regimes, separados pelo alvo do USUÁRIO contra a entrada:
+    # Três situações, pelo alvo do USUÁRIO contra a entrada e por haver ou não
+    # conversão de formato:
     #
     # - A entrada NÃO cabe no alvo: percorre-se a escada o quanto for preciso
     #   (`buscar`). O alvo é, então, menor que a entrada.
-    # - A entrada JÁ cabe: o melhor resultado que cabe no alvo é a própria
-    #   entrada, e "menor" passa a significar "menor de graça". Só os degraus
-    #   mais conservadores são elegíveis (`medir_conservadores`): o prefixo sem
-    #   perda e o degrau 0 (o único, em GIF e JPEG, que não têm prefixo). Se
-    #   nenhum encolhe o arquivo a resposta é `already_optimized`. O degrau 0
-    #   é o menos danoso da escada, então nunca se troca qualidade visível por
-    #   um arredondamento. Sem este piso, o alvo padrão
-    #   de 10 MB faria o PNG que a própria ferramenta gerou ser quantizado a
-    #   128 cores só para economizar 2 KB num arquivo que já cabia 2 mil vezes.
-    #   (O contrário também valia: sem limitar a busca, o degrau sem perda do
-    #   WebP, maior que uma foto, "cabia" no alvo e fazia o original voltar.)
+    # - A entrada JÁ cabe e o formato de saída é o MESMO: o melhor resultado que
+    #   cabe é a própria entrada, e "menor" passa a significar "menor de
+    #   graça". Só os degraus mais conservadores são elegíveis
+    #   (`medir_conservadores`): o prefixo sem perda e o degrau 0 (o único, em
+    #   GIF e JPEG, que não têm prefixo). Se nenhum encolhe o arquivo a
+    #   resposta é `already_optimized`. O degrau 0 é o menos danoso da escada,
+    #   então nunca se troca qualidade visível por um arredondamento. Sem este
+    #   piso, o alvo padrão de 10 MB faria o PNG que a própria ferramenta gerou
+    #   ser quantizado a 128 cores só para economizar 2 KB num arquivo que já
+    #   cabia 2 mil vezes.
+    # - A entrada já cabe, mas o usuário PEDIU a conversão (a caixa "Converter
+    #   para WebP"): marcá-la já é o consentimento para recodificar, e deixá-la
+    #   sem efeito no alvo padrão seria pior que não oferecê-la. A escada
+    #   inteira é elegível, mas o limite da busca é "menor que a entrada": sem
+    #   ele o degrau sem perda do WebP, maior que uma foto, "caberia" no alvo,
+    #   venceria por ser o de maior qualidade e o original voltaria. O limite é
+    #   só da busca; `hit_target` continua sendo contra o alvo do usuário.
+    mesmo_formato = saida == info.formato
     entrada_cabe_no_alvo = info.size_bytes <= target_bytes
 
     tmpdir = Path(tempfile.mkdtemp(prefix="gifc_"))
@@ -302,14 +310,15 @@ def compress_file(
             raise RungFailed(str(ultimo_erro))
 
         resultado: SearchResult[Any] | None
-        if entrada_cabe_no_alvo:
+        if entrada_cabe_no_alvo and mesmo_formato:
             resultado = medir_conservadores(
                 escada, max(n_prefixo, 1), encode_fn,
                 on_progress=on_progress, should_cancel=should_cancel,
             )
         else:
             resultado = buscar(
-                escada, n_prefixo, target_bytes, encode_fn,
+                escada, n_prefixo,
+                max(0, min(target_bytes, info.size_bytes - 1)), encode_fn,
                 on_progress=on_progress, should_cancel=should_cancel,
             )
 
