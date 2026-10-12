@@ -90,10 +90,60 @@ divergência entre nome de repositório e nome de pacote é comum e inofensiva.
 
 **A invariante de monotonicidade passa a valer por escada.** Cada formato tem
 a sua, e cada uma precisa satisfazer a mesma propriedade: cada degrau é
-fracamente mais agressivo que o anterior em todas as suas dimensões. Sem
-isso a bisecção fica incorreta — exatamente o defeito que já corrigimos uma
-vez na escada de GIF. O teste de propriedade existente passa a ser
-parametrizado por formato.
+fracamente mais agressivo que o anterior em todas as suas dimensões. Um teste
+de propriedade parametrizado trava isso nas quatro escadas.
+
+### Onde a invariante não alcança
+
+Essa invariante é sobre os **parâmetros**, não sobre o tamanho do arquivo
+resultante. A primeira versão desta spec tratava as duas coisas como a mesma,
+afirmando que parâmetros ordenados tornam o tamanho codificado
+monotonicamente não-crescente — e portanto a bisecção válida. **Isso é
+falso**, e medir as curvas reais com o codificador de verdade mostrou duas
+formas disso:
+
+**1. O degrau sem perda é incomparável, não só fora de ordem.** Numa captura
+de tela de 2560×1440, o degrau sem perda do WebP dá 4.218 bytes e o degrau
+seguinte (q90) dá 280.798 — **67× maior**. A bisecção, ao sondar o meio e não
+caber, descarta tudo à esquerda, degrau 0 incluído. Medido antes da correção:
+o programa entregava q45 a 50% de escala, 37.618 bytes, **8,9× maior que o
+disponível, degradado e com metade da resolução** — e reportava sucesso.
+
+A correção: cada formato declara `SEM_PERDA`, o prefixo de degraus cujo
+tamanho não é comparável ao resto — `(0,)` no WebP, `(0, 1)` no PNG, vazio no
+GIF e no JPEG. Esses degraus são codificados à parte, a cauda é bisseccionada
+como antes, e vence o menor índice entre todos os que couberem. Custa +1
+codificação no WebP e +2 no PNG.
+
+**2. As caudas também têm inversões, menores.** PNG, WebP e GIF têm inversões
+medidas dentro da cauda; só o JPEG é monotônico. Pior caso: PNG de 256 para
+128 cores num gradiente radial fica **+38,6% maior**. O WebP varia de +0,2% a
++6,9%, quase sempre em q70→q65.
+
+Essas ficam **aceitas e documentadas**, não corrigidas: 13 testes de curva
+real as registram como `xfail`, para que fiquem visíveis em vez de supostas.
+A consequência é que a bisecção é uma aproximação dentro da cauda — às vezes
+escolhe um degrau um pouco pior que o ótimo. Corrigir exigiria varrer a
+escada inteira, de ~5 para ~11 codificações por arquivo, e a troca não vale:
+o caso catastrófico era o do prefixo, e esse está resolvido.
+
+### O piso: alvo que a entrada já cumpre
+
+Limitar o alvo ao tamanho da entrada (`min(alvo, tamanho - 1)`) impede que um
+degrau maior que a entrada "caiba" e vença. Mas um alvo folgado não deve
+virar "encolher a qualquer custo": com o padrão de 10 MB, um PNG de 4,5 KB já
+otimizado era quantizado para 128 cores para economizar 1,9 KB.
+
+Então, quando a entrada **já cabe** no alvo do usuário e o formato de saída é
+o mesmo da entrada, só são elegíveis o prefixo `SEM_PERDA` e o degrau 0 — o
+ajuste menos danoso daquela escada. Se nada ali encolher, a resposta honesta
+é devolver o original.
+
+**Exceção: conversão pedida.** Marcar "Converter para WebP" é um pedido
+explícito que já aceita recodificação, então o piso não se aplica quando o
+formato de saída difere do da entrada: a escada inteira fica elegível. Sem
+essa exceção a caixa não fazia nada no alvo padrão — medido, um JPEG voltava
+intacto com 54% disponível.
 
 ## Pipelines por formato
 
@@ -501,7 +551,8 @@ projeto.
 | Risco | Tratamento |
 |---|---|
 | `tkdnd` não empacotado: arrastar não funciona | Declarado nos `datas`; item 2 do checklist manual |
-| Uma escada nova viola a monotonicidade e quebra a bisecção | Teste de propriedade parametrizado por formato |
+| Uma escada nova viola a invariante de parâmetros | Teste de propriedade parametrizado por formato |
+| O tamanho codificado não é monotônico, mesmo com parâmetros ordenados | Prefixo `SEM_PERDA` codificado à parte; inversões de cauda medidas e registradas como xfail |
 | SmartScreen afasta usuários | Instruções antes do link; sem solução sem certificado |
 | Parser de GIF discorda do `ffprobe` | Teste diferencial sobre arquivos gerados |
 | `quantize` do Pillow é inferior ao `pngquant` | Aceito: `pngquant.org` não resolve. Degraus 0-1 sem perda garantem que PNG nunca piore |
