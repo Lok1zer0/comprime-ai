@@ -1,4 +1,5 @@
 import random
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -290,18 +291,37 @@ def test_comprime_e_atinge_alvo_generoso(tools, gif_pequeno, tmp_path):
 
 
 @pytest.mark.integration
-def test_alvo_folgado_nao_mexe_num_gif_que_ja_cabe(tools, gif_pequeno, tmp_path):
-    """GIF não tem degrau sem perda: com a entrada dentro do alvo (aqui o
-    padrão de 10 MB) o original volta como está, sem perder cor, resolução
-    nem framerate."""
-    copia = tmp_path / "entrada.gif"
-    copia.write_bytes(gif_pequeno.read_bytes())
+def test_alvo_folgado_so_aplica_o_degrau_zero_num_gif(tools, tmp_path):
+    """Com a entrada dentro do alvo (aqui o padrão de 10 MB) o GIF recebe o
+    degrau 0 (256 cores, sem lossy, sem escala, framerate original) e nada
+    além dele: uma codificação, e nenhum sacrifício de cor, resolução ou fps."""
+    src = tmp_path / "anim.gif"
+    subprocess.run(
+        [tools.ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i",
+         "testsrc2=size=320x240:rate=15:duration=2", "-t", "2", str(src)],
+        check=True, capture_output=True,
+    )
+    r = compress_file(src, target_bytes=10_000_000, toggles=TODOS, tools=tools)
 
-    r = compress_file(copia, target_bytes=10_000_000, toggles=TODOS, tools=tools)
+    assert r.already_optimized is False
+    assert r.params == formato_gif.TABELA[0]
+    assert [a.index for a in r.attempts] == [0]
+    assert r.final_bytes < src.stat().st_size and r.hit_target is True
 
-    assert r.already_optimized is True and r.params is None
-    assert r.hit_target is True
-    assert r.dst.read_bytes() == copia.read_bytes() and r.dst != copia
+
+@pytest.mark.integration
+def test_alvo_folgado_so_aplica_o_degrau_zero_num_jpeg(tmp_path):
+    from gifc.formatos import jpeg as formato_jpeg
+
+    src = tmp_path / "foto.jpg"
+    _textura((640, 480)).save(src, "JPEG", quality=95)
+
+    r = compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS)
+
+    assert r.already_optimized is False
+    assert r.params == formato_jpeg.TABELA[0]            # q92, subamostragem da fonte
+    assert [a.index for a in r.attempts] == [0]
+    assert r.final_bytes < src.stat().st_size and r.hit_target is True
 
 
 @pytest.mark.integration
@@ -743,24 +763,51 @@ def test_png_sem_oxipng_so_codifica_um_degrau_sem_perda(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("formato", [Formato.GIF, Formato.JPEG])
-def test_formato_sem_degrau_sem_perda_nao_e_tocado_se_ja_cabe(
+def test_formato_sem_prefixo_so_tenta_o_degrau_zero_se_ja_cabe(
     tmp_path, monkeypatch, formato
 ):
-    """GIF e JPEG não têm degrau sem perda: com a entrada dentro do alvo, nada
-    é codificado e o original é devolvido, com o motivo dito."""
+    """GIF e JPEG não têm degrau sem perda, mas o degrau 0 é o menos danoso da
+    escada: com a entrada dentro do alvo é o ÚNICO elegível. Nenhum outro é
+    codificado, e se ele encolhe o arquivo é o entregue."""
     mod, src, info = _preparar_formato(tmp_path, monkeypatch, formato)
     modulo = formatos.para(formato)
-    falso, vistos = _codificador_falso(100)
+    falso, vistos = _codificador_falso(4_000)
     monkeypatch.setattr(modulo, "codificar", falso)
 
     r = mod.compress_file(
         src, 10_000_000, TODOS, Tools("ffmpeg", "ffprobe", "gifsicle")
     )
 
-    assert vistos == []
-    assert r.already_optimized is True and r.attempts == []
+    assert vistos == [modulo.TABELA[0]]
+    assert r.already_optimized is False and r.params == modulo.TABELA[0]
+    assert r.final_bytes == 4_000 and r.hit_target is True
+    assert [a.index for a in r.attempts] == [0]
+
+
+@pytest.mark.parametrize("formato", [Formato.GIF, Formato.JPEG])
+def test_formato_sem_prefixo_devolve_o_original_se_o_degrau_zero_nao_encolhe(
+    tmp_path, monkeypatch, formato
+):
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, formato)
+    modulo = formatos.para(formato)
+    falso, vistos = _codificador_falso(info.size_bytes + 100)
+    monkeypatch.setattr(modulo, "codificar", falso)
+
+    r = mod.compress_file(
+        src, 10_000_000, TODOS, Tools("ffmpeg", "ffprobe", "gifsicle")
+    )
+
+    assert vistos == [modulo.TABELA[0]]
+    assert r.already_optimized is True and r.params is None
     assert r.formato_saida is formato and r.hit_target is True
     assert r.dst.read_bytes() == src.read_bytes() and r.dst != src
+
+
+@pytest.mark.parametrize("formato", [Formato.GIF, Formato.JPEG])
+def test_degrau_zero_nao_vira_sem_perda(formato):
+    """Elegível sob um alvo folgado não é o mesmo que sem perda: `SEM_PERDA`
+    segue vazio em GIF e JPEG (a interface não pode dizer "sem perda" deles)."""
+    assert formatos.para(formato).SEM_PERDA == ()
 
 
 def test_entrada_que_ja_cabe_com_todos_os_degraus_sem_perda_falhando_e_erro(

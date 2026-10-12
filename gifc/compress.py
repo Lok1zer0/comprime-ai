@@ -203,26 +203,28 @@ def buscar(
     )
 
 
-def medir_sem_perda(
+def medir_conservadores(
     escada: Sequence[Any],
-    n_prefixo: int,
+    n_elegiveis: int,
     encode_fn: Callable[[int, Any], int],
     on_progress: ProgressFn | None = None,
     should_cancel: CancelFn | None = None,
 ) -> SearchResult[Any] | None:
-    """O MENOR resultado entre os degraus sem perda de `escada`, ou `None`
-    se ela não tem nenhum.
+    """O MENOR resultado entre os `n_elegiveis` primeiros degraus de `escada`,
+    ou `None` se `n_elegiveis` é 0.
 
     É o regime de uma entrada que JÁ cabe no alvo: aí o pedido é "menor de
-    graça", não "menor a qualquer custo", e só o que não perde nada entra em
-    consideração. Todos os do prefixo são medidos (são equivalentes em
-    qualidade, então vale o menor tamanho, não o primeiro) e nenhum com perda.
-    `hit_target` aqui só diz que algo foi medido; quem chama o recalcula
-    contra o alvo do usuário.
+    graça", não "menor a qualquer custo", e só os degraus mais conservadores
+    entram em consideração: o prefixo sem perda e, para quem não tem prefixo
+    (GIF, JPEG), o degrau 0, o menos danoso da escada. Ser elegível NÃO é ser
+    sem perda: `SEM_PERDA` continua querendo dizer "comprovadamente sem perda".
+    Todos os elegíveis são medidos (vale o menor tamanho, não o primeiro) e
+    nenhum degrau além deles. `hit_target` aqui só diz que algo foi medido;
+    quem chama o recalcula contra o alvo do usuário.
     """
     total = len(escada)
     tentativas: list[Attempt[Any]] = []
-    for tentativa in _sondar_prefixo(escada, n_prefixo, encode_fn, should_cancel):
+    for tentativa in _sondar_prefixo(escada, n_elegiveis, encode_fn, should_cancel):
         tentativas.append(tentativa)
         if on_progress is not None:
             on_progress(tentativa, total)
@@ -267,8 +269,11 @@ def compress_file(
     #   (`buscar`). O alvo é, então, menor que a entrada.
     # - A entrada JÁ cabe: o melhor resultado que cabe no alvo é a própria
     #   entrada, e "menor" passa a significar "menor de graça". Só os degraus
-    #   sem perda são considerados (`medir_sem_perda`), e se nenhum encolhe o
-    #   arquivo a resposta é `already_optimized`. Sem este piso, o alvo padrão
+    #   mais conservadores são elegíveis (`medir_conservadores`): o prefixo sem
+    #   perda e o degrau 0 (o único, em GIF e JPEG, que não têm prefixo). Se
+    #   nenhum encolhe o arquivo a resposta é `already_optimized`. O degrau 0
+    #   é o menos danoso da escada, então nunca se troca qualidade visível por
+    #   um arredondamento. Sem este piso, o alvo padrão
     #   de 10 MB faria o PNG que a própria ferramenta gerou ser quantizado a
     #   128 cores só para economizar 2 KB num arquivo que já cabia 2 mil vezes.
     #   (O contrário também valia: sem limitar a busca, o degrau sem perda do
@@ -298,8 +303,8 @@ def compress_file(
 
         resultado: SearchResult[Any] | None
         if entrada_cabe_no_alvo:
-            resultado = medir_sem_perda(
-                escada, n_prefixo, encode_fn,
+            resultado = medir_conservadores(
+                escada, max(n_prefixo, 1), encode_fn,
                 on_progress=on_progress, should_cancel=should_cancel,
             )
         else:
