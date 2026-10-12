@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from gifc.ladder import Params
+from gifc.formatos.gif import Params
 from gifc.search import FALHOU, Cancelled, RungFailed, find_best
 
 
@@ -176,7 +176,22 @@ def test_attempt_bem_sucedido_nao_carrega_erro():
     assert all(a.erro is None for a in r.attempts)
 
 
-@pytest.mark.xfail(reason="A busca binária é correta apenas em curvas monótonas. BASE_LADDER garante monotonicidade por construção, mas curvas sintéticas não-monótonas estão fora do contrato da função.")
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "find_best só é correta em curvas de tamanho monótonas, e isto não vem "
+        "de graça com a escada: as de PNG (degraus 0 e 1) e de WebP (degrau 0) "
+        "NÃO são monótonas, porque o degrau sem perda pode ser dezenas de vezes "
+        "MENOR que os com perda logo abaixo (test_formato_webp afirma essa "
+        "desigualdade; ver o teste que a liga à busca, abaixo). A orquestração "
+        "(compress.buscar) por isso codifica o prefixo SEM_PERDA de cada formato "
+        "fora da bisecção e só bisecta a cauda. A cauda NÃO é garantidamente "
+        "monótona: tests/test_curvas.py mede inversões nela (PNG, WebP e GIF), "
+        "que a orquestração não trata. find_best em si continua com a "
+        "pré-condição de monotonia: este xfail documenta o contrato, não um "
+        "defeito a corrigir aqui."
+    ),
+)
 def test_regressao_curva_nao_monotonica_encontra_menor_valido():
     """Demonstra que a bisecção falha em curva não-monotônica.
 
@@ -190,3 +205,67 @@ def test_regressao_curva_nao_monotonica_encontra_menor_valido():
     tamanhos = [100, 90, 80, 70, 95, 50, 40, 30, 20, 10]
     r = find_best(escada(10), 75, encoder(tamanhos))
     assert r.index == 3  # O verdadeiro melhor, não um fallback
+
+
+# --- o elo entre a desigualdade medida do WebP e a busca -------------------
+
+
+@pytest.mark.integration
+def test_webp_sem_perda_menor_que_o_lossy_e_o_que_quebra_find_best(tmp_path):
+    """Liga os dois fatos que antes viviam em testes sem relação.
+
+    1. `test_sem_perda_encolhe_arte_chapada_que_o_lossy_incharia`
+       (test_formato_webp) afirma que, em arte chapada, o WebP sem perda é
+       MENOS DA METADE do com perda (q90). Esta é a desigualdade que torna a
+       curva de tamanho da escada não-monótona logo no degrau 0.
+    2. `find_best` só é correta em curvas monótonas. Sobre a curva REAL
+       medida abaixo, com um alvo que o degrau 0 cumpre, ela devolve outro
+       degrau — o defeito que o `SEM_PERDA` existe para evitar.
+
+    Se a desigualdade do item 1 deixar de valer o item 2 deixa de ser
+    demonstrável e este teste avisa, em vez de a defesa apodrecer sem que
+    ninguém note. E se alguém tirar o degrau 0 do `SEM_PERDA`, `buscar`
+    deixa de achá-lo e a última parte falha.
+    """
+    from gifc.compress import buscar
+    from gifc.formatos import webp
+    from gifc.probe import probe
+    from gifc.tools import Tools
+    from tests.test_formato_webp import _captura_de_tela
+
+    src = _captura_de_tela(tmp_path / "captura.png")
+    info = probe(src)
+    ferramentas = Tools("ffmpeg", "ffprobe", None, oxipng=None)
+    tamanhos = [
+        webp.codificar(src, tmp_path / f"t{i}.webp", p, info, ferramentas)
+        for i, p in enumerate(webp.TABELA)
+    ]
+
+    # (1) a desigualdade medida: o sem perda é menos da metade do q90
+    assert webp.TABELA[0].quality is None and webp.TABELA[1].quality == 90
+    assert tamanhos[0] < tamanhos[1] / 2
+
+    escada = list(webp.TABELA)
+
+    def medido(index: int, params) -> int:
+        return tamanhos[index]
+
+    # (2) algum alvo que o degrau 0 cumpre faz a bisecção cega perdê-lo
+    perdidos = [
+        alvo for alvo in sorted(set(tamanhos))
+        if alvo >= tamanhos[0]
+        and find_best(escada, alvo, medido).index != 0
+    ]
+    assert perdidos, (
+        "find_best achou o degrau 0 em todos os alvos: a curva medida deixou de "
+        "ser não-monótona e a defesa do SEM_PERDA já não é demonstrada aqui"
+    )
+
+    # (3) a orquestração acha o degrau 0 em TODOS esses alvos, e também onde
+    # a bisecção cega acertava
+    n_prefixo = len(webp.SEM_PERDA)
+    assert n_prefixo == 1
+    for alvo in (a for a in sorted(set(tamanhos)) if a >= tamanhos[0]):
+        assert buscar(escada, n_prefixo, alvo, medido).index == 0, alvo
+    assert find_best(escada, perdidos[0], medido).index != 0
+    assert buscar(escada, n_prefixo, perdidos[0], medido).index == 0

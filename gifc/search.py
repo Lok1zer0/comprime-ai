@@ -8,11 +8,14 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import Generic, TypeVar
 
-from gifc.ladder import Params
+# Tipo dos parâmetros de um degrau. A busca não olha dentro deles: só os
+# repassa ao codificador, então vale para o `Params` de qualquer formato.
+P = TypeVar("P")
 
-EncodeFn = Callable[[int, Params], int]
-ProgressFn = Callable[["Attempt", int], None]
+EncodeFn = Callable[[int, P], int]
+ProgressFn = Callable[["Attempt[P]", int], None]
 CancelFn = Callable[[], bool]
 
 # Sentinela de tamanho para um degrau que falhou: a busca o trata como
@@ -34,38 +37,43 @@ class RungFailed(Exception):
 
 
 @dataclass(frozen=True)
-class Attempt:
+class Attempt(Generic[P]):
     index: int
-    params: Params
+    params: P
     size_bytes: int
     erro: str | None = None
 
 
 @dataclass
-class SearchResult:
+class SearchResult(Generic[P]):
     index: int
-    params: Params
+    params: P
     size_bytes: int
     hit_target: bool
-    attempts: list[Attempt] = field(default_factory=list)
+    attempts: list[Attempt[P]] = field(default_factory=list)
 
 
 def find_best(
-    ladder: Sequence[Params],
+    ladder: Sequence[P],
     target_bytes: int,
-    encode_fn: EncodeFn,
-    on_progress: ProgressFn | None = None,
+    encode_fn: EncodeFn[P],
+    on_progress: ProgressFn[P] | None = None,
     should_cancel: CancelFn | None = None,
-) -> SearchResult:
+) -> SearchResult[P]:
     """Acha o degrau de MAIOR qualidade cujo resultado cabe no alvo.
 
-    A escada garante que cada degrau é fracamente mais agressivo que o
-    anterior em todas as dimensões, o que torna o tamanho codificado
-    monotonicamente não-crescente. Isto permite usar uma busca de lower
-    bound: ~log2(n) codificações em vez de n.
+    PRÉ-CONDIÇÃO: o tamanho codificado é monotonicamente não-crescente ao
+    longo de `ladder`. Só então vale a busca de lower bound, ~log2(n)
+    codificações em vez de n. Agressividade fracamente crescente em todas as
+    colunas NÃO basta para isso: onde há degrau sem perda a curva sobe antes
+    de descer (arte chapada: o sem perda é muito menor que o com perda logo
+    abaixo), e uma sonda que estoura o alvo faria a busca descartar o degrau
+    de menor índice sem medi-lo. Quem chama tira esse prefixo da escada e o
+    codifica à parte (`gifc.compress.buscar`, `SEM_PERDA` de cada formato).
 
-    O registro de `menor_absoluto` continua necessário para proteger contra
-    variações do encoder que possam produzir um arquivo localmente maior.
+    O registro de `menor_absoluto` não conserta isso: ele só impede que uma
+    tentativa MEDIDA piore o resultado, e o degrau melhor nunca foi medido.
+    Serve para o caso em que nada cabe no alvo.
 
     Se nenhum degrau couber, devolve o de menor tamanho encontrado, com
     `hit_target=False`.
@@ -74,10 +82,10 @@ def find_best(
         raise ValueError("A escada de qualidade está vazia.")
 
     total = len(ladder)
-    attempts: list[Attempt] = []
+    attempts: list[Attempt[P]] = []
 
-    melhor_valido: Attempt | None = None
-    menor_absoluto: Attempt | None = None
+    melhor_valido: Attempt[P] | None = None
+    menor_absoluto: Attempt[P] | None = None
 
     lo, hi = 0, total - 1
     while lo <= hi:

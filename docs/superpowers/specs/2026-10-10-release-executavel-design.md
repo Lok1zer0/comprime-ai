@@ -90,10 +90,60 @@ divergência entre nome de repositório e nome de pacote é comum e inofensiva.
 
 **A invariante de monotonicidade passa a valer por escada.** Cada formato tem
 a sua, e cada uma precisa satisfazer a mesma propriedade: cada degrau é
-fracamente mais agressivo que o anterior em todas as suas dimensões. Sem
-isso a bisecção fica incorreta — exatamente o defeito que já corrigimos uma
-vez na escada de GIF. O teste de propriedade existente passa a ser
-parametrizado por formato.
+fracamente mais agressivo que o anterior em todas as suas dimensões. Um teste
+de propriedade parametrizado trava isso nas quatro escadas.
+
+### Onde a invariante não alcança
+
+Essa invariante é sobre os **parâmetros**, não sobre o tamanho do arquivo
+resultante. A primeira versão desta spec tratava as duas coisas como a mesma,
+afirmando que parâmetros ordenados tornam o tamanho codificado
+monotonicamente não-crescente — e portanto a bisecção válida. **Isso é
+falso**, e medir as curvas reais com o codificador de verdade mostrou duas
+formas disso:
+
+**1. O degrau sem perda é incomparável, não só fora de ordem.** Numa captura
+de tela de 2560×1440, o degrau sem perda do WebP dá 4.218 bytes e o degrau
+seguinte (q90) dá 280.798 — **67× maior**. A bisecção, ao sondar o meio e não
+caber, descarta tudo à esquerda, degrau 0 incluído. Medido antes da correção:
+o programa entregava q45 a 50% de escala, 37.618 bytes, **8,9× maior que o
+disponível, degradado e com metade da resolução** — e reportava sucesso.
+
+A correção: cada formato declara `SEM_PERDA`, o prefixo de degraus cujo
+tamanho não é comparável ao resto — `(0,)` no WebP, `(0, 1)` no PNG, vazio no
+GIF e no JPEG. Esses degraus são codificados à parte, a cauda é bisseccionada
+como antes, e vence o menor índice entre todos os que couberem. Custa +1
+codificação no WebP e +2 no PNG.
+
+**2. As caudas também têm inversões, menores.** PNG, WebP e GIF têm inversões
+medidas dentro da cauda; só o JPEG é monotônico. Pior caso: PNG de 256 para
+128 cores num gradiente radial fica **+38,6% maior**. O WebP varia de +0,2% a
++6,9%, quase sempre em q70→q65.
+
+Essas ficam **aceitas e documentadas**, não corrigidas: 13 testes de curva
+real as registram como `xfail`, para que fiquem visíveis em vez de supostas.
+A consequência é que a bisecção é uma aproximação dentro da cauda — às vezes
+escolhe um degrau um pouco pior que o ótimo. Corrigir exigiria varrer a
+escada inteira, de ~5 para ~11 codificações por arquivo, e a troca não vale:
+o caso catastrófico era o do prefixo, e esse está resolvido.
+
+### O piso: alvo que a entrada já cumpre
+
+Limitar o alvo ao tamanho da entrada (`min(alvo, tamanho - 1)`) impede que um
+degrau maior que a entrada "caiba" e vença. Mas um alvo folgado não deve
+virar "encolher a qualquer custo": com o padrão de 10 MB, um PNG de 4,5 KB já
+otimizado era quantizado para 128 cores para economizar 1,9 KB.
+
+Então, quando a entrada **já cabe** no alvo do usuário e o formato de saída é
+o mesmo da entrada, só são elegíveis o prefixo `SEM_PERDA` e o degrau 0 — o
+ajuste menos danoso daquela escada. Se nada ali encolher, a resposta honesta
+é devolver o original.
+
+**Exceção: conversão pedida.** Marcar "Converter para WebP" é um pedido
+explícito que já aceita recodificação, então o piso não se aplica quando o
+formato de saída difere do da entrada: a escada inteira fica elegível. Sem
+essa exceção a caixa não fazia nada no alvo padrão — medido, um JPEG voltava
+intacto com 54% disponível.
 
 ## Pipelines por formato
 
@@ -101,7 +151,7 @@ parametrizado por formato.
 |---|---|
 | **GIF** | `ffmpeg` (palettegen/paletteuse) → `gifsicle -O3 --lossy` |
 | **PNG** | Pillow `quantize()` → `oxipng` |
-| **JPEG** | Pillow, reempacotamento com qualidade e subamostragem |
+| **JPEG** | Pillow, reempacotamento com qualidade e subamostragem; EXIF e ICC preservados, CMYK segue CMYK |
 | **WebP** | Pillow, `quality` com `method=6` |
 
 O PNG espelha a forma do GIF de propósito: um passo com perda que reduz
@@ -118,18 +168,29 @@ Medição real, PNG de 1280×800, `optimize=True` em todos os casos:
 | Entrada | 256 cores | 64 cores | 32 cores |
 |---|---|---|---|
 | Interface / captura de tela | **−59%** | −66% | −69% |
-| Foto / gradiente suave | **+26%** | −40% | −57% |
+| Gradiente **linear** | **+26%** | −40% | −57% |
+| Gradiente **radial** | **−60%** | — | — |
+
+> **Correção.** A primeira versão desta spec chamava a linha do meio de "foto /
+> gradiente suave" e concluía que "PNG fotográfico fica maior". Isso foi uma
+> generalização indevida de um único fixture. Medindo de novo: o crescimento de
+> +26% acontece com gradiente **linear**, que os filtros de linha do PNG
+> predizem quase perfeitamente — a paleta mais os índices custam mais do que o
+> filtro já economizava. Um gradiente radial da mesma dimensão **encolhe 60%**,
+> e uma fotografia real, sendo ruidosa, se parece muito mais com o caso radial.
+> Então: para fotos de verdade a quantização normalmente reduz.
 
 Duas consequências de desenho:
 
 **PNG de interface é o caso que importa e comprime muito bem** — 59% já na
 redução mais conservadora.
 
-**PNG fotográfico fica maior com paleta de 256 cores.** O custo da tabela
-supera o ganho em gradiente suave. Isso não é um caso hipotético, é o
-comportamento normal, e é por isso que o degrau 0 da escada de PNG **não
-quantiza nada** — é só `oxipng`, sem perda. Para PNG fotográfico a resposta
-certa é a conversão para WebP, não a quantização.
+**Um degrau pode produzir arquivo maior que a entrada.** Em imagens muito
+suaves e previsíveis, o custo da paleta e dos índices supera o que os filtros
+de linha já economizavam. Não é o caso comum — é o caso que existe — e é
+por isso que o degrau 0 da escada de PNG **não quantiza nada**: é só
+`oxipng`, sem perda, garantindo um piso. Para PNG fotográfico pesado, a
+conversão para WebP tende a render mais que a quantização.
 
 A engine já trata isso corretamente: `menor_absoluto` garante que um degrau
 que aumentou o arquivo não piore o resultado, e `already_optimized` devolve o
@@ -170,8 +231,8 @@ Degraus 0 e 1 são **sem perda**: só recompressão. `cores = None` significa
 
 | # | Qualidade | Subamostragem | Escala |
 |---|---|---|---|
-| 0 | 92 | 4:4:4 | 100% |
-| 1 | 88 | 4:4:4 | 100% |
+| 0 | 92 | igual à fonte | 100% |
+| 1 | 88 | igual à fonte | 100% |
 | 2 | 85 | 4:2:0 | 100% |
 | 3 | 80 | 4:2:0 | 100% |
 | 4 | 75 | 4:2:0 | 100% |
@@ -186,23 +247,63 @@ Degraus 0 e 1 são **sem perda**: só recompressão. `cores = None` significa
 `progressive=True` em todos os degraus: economiza alguns por cento sem custo
 de qualidade, então não é uma alavanca, é um padrão.
 
+**Os degraus 0 e 1 mantêm a subamostragem da fonte**, em vez de forçar 4:4:4
+como dizia a primeira versão desta spec. Medido: num JPEG de câmera (q95,
+4:2:0), o degrau 0 forçando 4:4:4 saía a **96,7% do original** — quase nada,
+porque 4:4:4 devolve resolução de cor que a fonte nunca teve. Mantendo a
+subamostragem da fonte, o degrau 0 fica em ~74%, e uma fonte 4:4:4 preserva
+4:4:4 até o degrau 2.
+
+> **Cuidado com o `-1`.** No `Params` o valor `-1` é *nosso* e significa
+> "igual à fonte"; ele é resolvido lendo a fonte aberta com
+> `JpegImagePlugin.get_sampling`. **Nunca repasse `-1` ao Pillow**, onde ele
+> é o padrão do libjpeg e vale 4:2:0 — verificado byte a byte. E `"keep"` não
+> serve: o Pillow o recusa quando a imagem a gravar é uma cópia, o que é
+> sempre o caso depois de `exif_transpose` ou `resize`. Passar `-1` adiante
+> degradaria em silêncio toda fonte 4:4:4 justamente no degrau mais
+> conservador.
+
 ### WebP — Pillow
 
 | # | Qualidade | Escala |
 |---|---|---|
-| 0 | 90 | 100% |
-| 1 | 85 | 100% |
-| 2 | 80 | 100% |
-| 3 | 75 | 100% |
-| 4 | 70 | 100% |
-| 5 | 65 | 100% |
-| 6 | 60 | 85% |
-| 7 | 55 | 85% |
-| 8 | 50 | 70% |
-| 9 | 45 | 50% |
+| 0 | **sem perda** | 100% |
+| 1 | 90 | 100% |
+| 2 | 85 | 100% |
+| 3 | 80 | 100% |
+| 4 | 75 | 100% |
+| 5 | 70 | 100% |
+| 6 | 65 | 100% |
+| 7 | 60 | 85% |
+| 8 | 55 | 85% |
+| 9 | 50 | 70% |
+| 10 | 45 | 50% |
 
 `method=6` fixo em todos: é o ajuste mais lento e que comprime melhor, e é um
 botão de tempo, não de qualidade. Não entra na escada.
+
+**O degrau 0 é sem perda**, e não existia na primeira versão desta spec. Essa
+escada era toda com perda, o que fazia a conversão de arte chapada *dobrar* o
+arquivo — enquanto o usuário tinha pedido a conversão de propósito. Medido
+nesta máquina com `method=6`:
+
+| Entrada | PNG | WebP sem perda | WebP q90 |
+|---|---|---|---|
+| Logo RGBA chapado | 1.164 | **496 (43%)** | 2.262 (194%) |
+| Captura de tela | 2.640 | **232 (8,8%)** | 5.158 (195%) |
+| Foto ruidosa | 373 KB | 260 KB (70%) | **30,8 KB (8,3%)** |
+
+Ou seja: sem perda é dramaticamente melhor para arte chapada e dramaticamente
+pior para foto. Com os dois na mesma escada, a bisecção escolhe o certo para
+cada arquivo sem o usuário precisar saber da diferença.
+
+`quality = None` significa sem perda e é o extremo **menos** agressivo da
+coluna — o mesmo padrão que o PNG já usa com `cores = None`. É também o único
+degrau de todo o projeto onde igualdade de pixel é afirmável, e por isso tem
+teste que a afirma.
+
+Sem perda só em escala 100%: reduzir resolução já é perda, então um degrau
+"sem perda a 70%" seria contradição.
 
 ### GIF
 
@@ -439,7 +540,7 @@ projeto.
 1. `python -m pytest` verde, com o xfail deliberado ainda xfail
 2. O app empacotado comprime os quatro formatos sem ffmpeg no PATH
 3. O executável abre sem crash
-4. PNG de interface comprime acima de 50%; PNG fotográfico nunca sai maior
+4. PNG de interface comprime acima de 50%; nenhum PNG sai maior que a entrada
 5. Release publicada com asset, notas, `LICENSE` e `THIRD-PARTY-LICENSES.md`
 6. README começa pelo caminho do leigo, SmartScreen antes do link
 7. Tamanho do pacote e tempo de abertura registrados na release — medidos,
@@ -450,7 +551,8 @@ projeto.
 | Risco | Tratamento |
 |---|---|
 | `tkdnd` não empacotado: arrastar não funciona | Declarado nos `datas`; item 2 do checklist manual |
-| Uma escada nova viola a monotonicidade e quebra a bisecção | Teste de propriedade parametrizado por formato |
+| Uma escada nova viola a invariante de parâmetros | Teste de propriedade parametrizado por formato |
+| O tamanho codificado não é monotônico, mesmo com parâmetros ordenados | Prefixo `SEM_PERDA` codificado à parte; inversões de cauda medidas e registradas como xfail |
 | SmartScreen afasta usuários | Instruções antes do link; sem solução sem certificado |
 | Parser de GIF discorda do `ffprobe` | Teste diferencial sobre arquivos gerados |
 | `quantize` do Pillow é inferior ao `pngquant` | Aceito: `pngquant.org` não resolve. Degraus 0-1 sem perda garantem que PNG nunca piore |

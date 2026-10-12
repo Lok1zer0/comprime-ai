@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
-import dataclasses
 import shutil
 import tempfile
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
-from gifc.encode import EncodeError, encode
-from gifc.ladder import Params, Toggles, build
-from gifc.probe import probe
-from gifc.search import FALHOU, Attempt, CancelFn, ProgressFn, RungFailed, find_best
+from gifc import formatos
+from gifc.formatos.base import EncodeError
+from gifc.ladder import Toggles, aplicar_toggles
+from gifc.probe import Formato, ImagemInfo, probe
+from gifc.search import (
+    FALHOU,
+    Attempt,
+    Cancelled,
+    CancelFn,
+    ProgressFn,
+    RungFailed,
+    SearchResult,
+    find_best,
+)
 from gifc.tools import Tools
 
 SUFIXO = "_comprimido"
@@ -27,9 +38,13 @@ class CompressResult:
     dst: Path
     original_bytes: int
     final_bytes: int
-    params: Params | None
+    params: Any | None  # o `Params` do formato do arquivo; None se já otimizado
     hit_target: bool
     already_optimized: bool
+    # `formato_saida` é o formato do arquivo que FOI escrito, não o pedido:
+    # se a conversão não rendeu e o original foi copiado, é o da entrada.
+    formato_entrada: Formato
+    formato_saida: Formato
     attempts: list[Attempt] = field(default_factory=list)
 
     @property
@@ -39,26 +54,191 @@ class CompressResult:
         return 100.0 * (1 - self.final_bytes / self.original_bytes)
 
 
-def unique_output_path(src: Path) -> Path:
-    """`gato.gif` -> `gato_comprimido.gif`, sem nunca sobrescrever."""
-    base = src.with_name(f"{src.stem}{SUFIXO}{src.suffix}")
+def unique_output_path(src: Path, formato: Formato | None = None) -> Path:
+    """`gato.gif` -> `gato_comprimido.gif`, sem nunca sobrescrever.
+
+    Com `formato`, a extensão é a desse formato (a do mapa em
+    `gifc.formatos`, nunca `formato.value`); sem ele, a de `src`.
+    """
+    ext = src.suffix if formato is None else formatos.extensao(formato)
+    base = src.with_name(f"{src.stem}{SUFIXO}{ext}")
     if not base.exists():
         return base
     n = 2
     while True:
-        candidato = src.with_name(f"{src.stem}{SUFIXO}_{n}{src.suffix}")
+        candidato = src.with_name(f"{src.stem}{SUFIXO}_{n}{ext}")
         if not candidato.exists():
             return candidato
         n += 1
 
 
-def _try_path(tmpdir: Path, index: int) -> Path:
+def _try_path(tmpdir: Path, index: int, formato: Formato) -> Path:
     """Caminho do arquivo intermediário de um degrau dentro do tmpdir.
 
-    Único lugar que sabe a convenção `try_{index}.gif` — usado tanto ao
-    codificar quanto ao localizar o vencedor depois da busca.
+    Único lugar que sabe a convenção `try_{index}{extensão}` — usado tanto ao
+    codificar quanto ao localizar o vencedor depois da busca. A extensão
+    segue o formato de SAÍDA da escada em uso (é o WebP numa conversão)
+    porque o Pillow escolhe o formato de saída por ela.
     """
-    return tmpdir / f"try_{index}.gif"
+    return tmpdir / f"try_{index}{formatos.extensao(formato)}"
+
+
+def montar_escada(
+    formato: Formato, info: ImagemInfo, toggles: Toggles, tools: Tools
+) -> tuple[list[Any], int]:
+    """A escada que se percorre para `formato`, e quantos dos seus primeiros
+    degraus são o prefixo sem perda (`SEM_PERDA`) que a bisecção não pode
+    atravessar.
+
+    O prefixo é calculado sobre a MESMA transformação da escada inteira (os
+    toggles efetivos e as duas deduplicações, a dos toggles e a dos degraus
+    equivalentes nesta máquina): elas mantêm o primeiro de cada grupo e o
+    prefixo é o começo da tabela, então o dele é o começo da escada.
+    """
+    modulo = formatos.para(formato)
+    toggles = formatos.toggles_efetivos(formato, toggles, tools)
+    escada = formatos.sem_equivalentes(
+        formato, aplicar_toggles(modulo.TABELA, info, toggles, modulo.NEUTROS),
+        tools,
+    )
+    prefixo = formatos.sem_equivalentes(
+        formato,
+        aplicar_toggles(
+            modulo.TABELA[: len(modulo.SEM_PERDA)], info, toggles, modulo.NEUTROS
+        ),
+        tools,
+    )
+    return escada, len(prefixo)
+
+
+def _sondar(
+    index: int, params: Any, encode_fn: Callable[[int, Any], int]
+) -> Attempt[Any]:
+    """Uma codificação, com `RungFailed` virando um `Attempt` de tamanho
+    `FALHOU`: o mesmo tratamento que `find_best` dá a cada sonda sua."""
+    try:
+        return Attempt(index, params, encode_fn(index, params))
+    except RungFailed as exc:
+        return Attempt(index, params, FALHOU, exc.mensagem)
+
+
+def _sondar_prefixo(
+    escada: Sequence[Any],
+    n_prefixo: int,
+    encode_fn: Callable[[int, Any], int],
+    should_cancel: CancelFn | None,
+) -> Iterator[Attempt[Any]]:
+    """Sonda os degraus do prefixo sem perda, em ordem e um a um. É preguiçoso:
+    quem consome decide se o próximo chega a ser codificado."""
+    for i in range(n_prefixo):
+        if should_cancel is not None and should_cancel():
+            raise Cancelled()
+        yield _sondar(i, escada[i], encode_fn)
+
+
+def buscar(
+    escada: Sequence[Any],
+    n_prefixo: int,
+    alvo: int,
+    encode_fn: Callable[[int, Any], int],
+    on_progress: ProgressFn | None = None,
+    should_cancel: CancelFn | None = None,
+) -> SearchResult[Any]:
+    """O degrau de MAIOR qualidade de `escada` que cabe em `alvo`.
+
+    `find_best` bisecta, e a bisecção só é correta numa curva de tamanho
+    monótona. Os `n_prefixo` primeiros degraus (os sem perda, ver
+    `SEM_PERDA` em `gifc.formatos.base`) quebram essa monotonia, então são
+    codificados um a um, em ordem, FORA da bisecção; só a cauda é bisectada.
+    Vence o menor índice entre todos os que cabem, do prefixo e da cauda.
+
+    Um degrau do prefixo que cabe encerra a busca: ele tem índice menor que
+    qualquer coisa da cauda, e é o que o critério escolheria de qualquer
+    forma. O pior caso (nada cabe) custa o prefixo inteiro mais a bisecção.
+
+    Índices e total em `Attempt`/`on_progress` são os da escada inteira.
+    Se nada cabe, devolve o menor tamanho medido, com `hit_target=False`.
+    """
+    if not escada:
+        raise ValueError("A escada de qualidade está vazia.")
+    total = len(escada)
+    tentativas: list[Attempt[Any]] = []
+
+    def registrar(tentativa: Attempt[Any]) -> None:
+        tentativas.append(tentativa)
+        if on_progress is not None:
+            on_progress(tentativa, total)
+
+    cabe_no_prefixo = False
+    for tentativa in _sondar_prefixo(escada, n_prefixo, encode_fn, should_cancel):
+        registrar(tentativa)
+        if tentativa.size_bytes <= alvo:
+            cabe_no_prefixo = True
+            break
+
+    if not cabe_no_prefixo and n_prefixo < total:
+        # `find_best` enxerga só a cauda, com índices locais; deslocar de
+        # volta para os da escada inteira, aqui e no `encode_fn`.
+        find_best(
+            escada[n_prefixo:], alvo,
+            lambda i, params: encode_fn(i + n_prefixo, params),
+            on_progress=lambda a, _total: registrar(
+                replace(a, index=a.index + n_prefixo)
+            ),
+            should_cancel=should_cancel,
+        )
+
+    cabem = [t for t in tentativas if t.size_bytes <= alvo]
+    if cabem:
+        escolhido = min(cabem, key=lambda t: t.index)
+    else:
+        # `min` fica com o primeiro dos empatados: o primeiro medido.
+        escolhido = min(tentativas, key=lambda t: t.size_bytes)
+    return SearchResult(
+        index=escolhido.index,
+        params=escolhido.params,
+        size_bytes=escolhido.size_bytes,
+        hit_target=bool(cabem),
+        attempts=tentativas,
+    )
+
+
+def medir_conservadores(
+    escada: Sequence[Any],
+    n_elegiveis: int,
+    encode_fn: Callable[[int, Any], int],
+    on_progress: ProgressFn | None = None,
+    should_cancel: CancelFn | None = None,
+) -> SearchResult[Any] | None:
+    """O MENOR resultado entre os `n_elegiveis` primeiros degraus de `escada`,
+    ou `None` se `n_elegiveis` é 0.
+
+    É o regime de uma entrada que JÁ cabe no alvo: aí o pedido é "menor de
+    graça", não "menor a qualquer custo", e só os degraus mais conservadores
+    entram em consideração: o prefixo sem perda e, para quem não tem prefixo
+    (GIF, JPEG), o degrau 0, o menos danoso da escada. Ser elegível NÃO é ser
+    sem perda: `SEM_PERDA` continua querendo dizer "comprovadamente sem perda".
+    Todos os elegíveis são medidos (vale o menor tamanho, não o primeiro) e
+    nenhum degrau além deles. `hit_target` aqui só diz que algo foi medido;
+    quem chama o recalcula contra o alvo do usuário.
+    """
+    total = len(escada)
+    tentativas: list[Attempt[Any]] = []
+    for tentativa in _sondar_prefixo(escada, n_elegiveis, encode_fn, should_cancel):
+        tentativas.append(tentativa)
+        if on_progress is not None:
+            on_progress(tentativa, total)
+    if not tentativas:
+        return None
+    # `min` fica com o primeiro dos empatados: o de menor índice.
+    menor = min(tentativas, key=lambda t: t.size_bytes)
+    return SearchResult(
+        index=menor.index,
+        params=menor.params,
+        size_bytes=menor.size_bytes,
+        hit_target=menor.size_bytes != FALHOU,
+        attempts=tentativas,
+    )
 
 
 def compress_file(
@@ -66,24 +246,51 @@ def compress_file(
     target_bytes: int,
     toggles: Toggles,
     tools: Tools,
+    converter_webp: bool = False,
     on_progress: ProgressFn | None = None,
     should_cancel: CancelFn | None = None,
 ) -> CompressResult:
-    """Comprime `src` buscando o melhor resultado que cabe em `target_bytes`."""
+    """Comprime `src` buscando o melhor resultado que cabe em `target_bytes`.
+
+    Com `converter_webp`, um PNG ou JPEG percorre a escada de WebP. Se nenhum
+    degrau ficar menor que a entrada o original é copiado, e então
+    `formato_saida` (e a extensão de `dst`) é o da entrada: o resultado diz o
+    que foi escrito, não o que foi pedido.
+    """
     src = Path(src)
-    info = probe(src, tools)
+    info = probe(src)
 
-    # Sem gifsicle não há estágio lossy: manter a coluna ligada só geraria
-    # degraus que produzem exatamente o mesmo arquivo, desperdiçando encodes.
-    if tools.gifsicle is None:
-        toggles = dataclasses.replace(toggles, lossy=False)
-
-    escada = build(info, toggles)
-    dst = unique_output_path(src)
+    saida = formatos.formato_de_saida(info.formato, converter_webp)
+    modulo = formatos.para(saida)
+    escada, n_prefixo = montar_escada(saida, info, toggles, tools)
+    # Três situações, pelo alvo do USUÁRIO contra a entrada e por haver ou não
+    # conversão de formato:
+    #
+    # - A entrada NÃO cabe no alvo: percorre-se a escada o quanto for preciso
+    #   (`buscar`). O alvo é, então, menor que a entrada.
+    # - A entrada JÁ cabe e o formato de saída é o MESMO: o melhor resultado que
+    #   cabe é a própria entrada, e "menor" passa a significar "menor de
+    #   graça". Só os degraus mais conservadores são elegíveis
+    #   (`medir_conservadores`): o prefixo sem perda e o degrau 0 (o único, em
+    #   GIF e JPEG, que não têm prefixo). Se nenhum encolhe o arquivo a
+    #   resposta é `already_optimized`. O degrau 0 é o menos danoso da escada,
+    #   então nunca se troca qualidade visível por um arredondamento. Sem este
+    #   piso, o alvo padrão de 10 MB faria o PNG que a própria ferramenta gerou
+    #   ser quantizado a 128 cores só para economizar 2 KB num arquivo que já
+    #   cabia 2 mil vezes.
+    # - A entrada já cabe, mas o usuário PEDIU a conversão (a caixa "Converter
+    #   para WebP"): marcá-la já é o consentimento para recodificar, e deixá-la
+    #   sem efeito no alvo padrão seria pior que não oferecê-la. A escada
+    #   inteira é elegível, mas o limite da busca é "menor que a entrada": sem
+    #   ele o degrau sem perda do WebP, maior que uma foto, "caberia" no alvo,
+    #   venceria por ser o de maior qualidade e o original voltaria. O limite é
+    #   só da busca; `hit_target` continua sendo contra o alvo do usuário.
+    mesmo_formato = saida == info.formato
+    entrada_cabe_no_alvo = info.size_bytes <= target_bytes
 
     tmpdir = Path(tempfile.mkdtemp(prefix="gifc_"))
     try:
-        def encode_fn(index: int, params: Params) -> int:
+        def encode_fn(index: int, params: Any) -> int:
             # Uma falha transitória do ffmpeg/gifsicle (arquivo temporário
             # ainda travado por antivírus, hiccup de I/O) não pode custar a
             # metade de alta qualidade da escada inteira. Tenta de novo uma
@@ -93,29 +300,41 @@ def compress_file(
             ultimo_erro: EncodeError | None = None
             for _tentativa in range(2):
                 try:
-                    return encode(
-                        src, _try_path(tmpdir, index), params, info, tools
+                    return modulo.codificar(
+                        src, _try_path(tmpdir, index, saida),
+                        params, info, tools,
                     )
                 except EncodeError as exc:
                     ultimo_erro = exc
             assert ultimo_erro is not None  # o loop rodou 2x e sempre falhou
             raise RungFailed(str(ultimo_erro))
 
-        resultado = find_best(
-            escada, target_bytes, encode_fn,
-            on_progress=on_progress, should_cancel=should_cancel,
-        )
+        resultado: SearchResult[Any] | None
+        if entrada_cabe_no_alvo and mesmo_formato:
+            resultado = medir_conservadores(
+                escada, max(n_prefixo, 1), encode_fn,
+                on_progress=on_progress, should_cancel=should_cancel,
+            )
+        else:
+            resultado = buscar(
+                escada, n_prefixo,
+                max(0, min(target_bytes, info.size_bytes - 1)), encode_fn,
+                on_progress=on_progress, should_cancel=should_cancel,
+            )
 
-        if resultado.size_bytes == FALHOU:
+        if resultado is not None and resultado.size_bytes == FALHOU:
             raise CompressError(
                 f"Nenhuma configuração conseguiu comprimir {src.name}. "
                 f"O arquivo pode estar corrompido."
             )
 
-        vencedor = _try_path(tmpdir, resultado.index)
-
-        # GIFs já muito otimizados podem crescer ao serem reescritos.
-        if resultado.size_bytes >= info.size_bytes:
+        # Arquivos já muito otimizados podem crescer ao serem reescritos, e um
+        # WebP pode ficar maior que o PNG/JPEG de origem. Em ambos os casos o
+        # original é copiado, no formato (e na extensão) dele. Também é o caso
+        # de uma entrada que já cabe no alvo e não tem degrau sem perda
+        # (`resultado is None`: GIF e JPEG) ou cujo sem perda não a encolhe.
+        if resultado is None or resultado.size_bytes >= info.size_bytes:
+            dst = unique_output_path(src, info.formato)
             shutil.copy2(src, dst)
             return CompressResult(
                 src=src, dst=dst,
@@ -124,17 +343,23 @@ def compress_file(
                 params=None,
                 hit_target=info.size_bytes <= target_bytes,
                 already_optimized=True,
-                attempts=resultado.attempts,
+                formato_entrada=info.formato,
+                formato_saida=info.formato,
+                attempts=[] if resultado is None else resultado.attempts,
             )
 
+        vencedor = _try_path(tmpdir, resultado.index, saida)
+        dst = unique_output_path(src, saida)
         shutil.move(str(vencedor), str(dst))
         return CompressResult(
             src=src, dst=dst,
             original_bytes=info.size_bytes,
             final_bytes=dst.stat().st_size,
             params=resultado.params,
-            hit_target=resultado.hit_target,
+            hit_target=resultado.size_bytes <= target_bytes,
             already_optimized=False,
+            formato_entrada=info.formato,
+            formato_saida=saida,
             attempts=resultado.attempts,
         )
     finally:
