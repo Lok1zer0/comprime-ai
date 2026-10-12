@@ -13,7 +13,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps, PngImagePlugin
 
 from gifc.formatos.base import EncodeError, executar
 from gifc.ladder import target_width
@@ -126,15 +126,56 @@ def _quantizar(img: Image.Image, cores: int) -> Image.Image:
     return img.quantize(colors=cores, method=metodo)
 
 
-def _escalar(img: Image.Image, info: ImagemInfo, scale_pct: int) -> Image.Image:
-    """Reduz pela mesma regra de largura do resto do projeto; nunca amplia."""
+def _escalar(img: Image.Image, scale_pct: int) -> Image.Image:
+    """Reduz pela mesma regra de largura do resto do projeto; nunca amplia.
+
+    Parte da largura da imagem JÁ endireitada (`img.width`), não de
+    `ImagemInfo.width`, que é a largura ARMAZENADA: numa imagem com
+    orientação EXIF 6 é o lado que se vê na vertical.
+    """
     if scale_pct == 100:
         return img
-    largura = target_width(info.width, scale_pct)
+    largura = target_width(img.width, scale_pct)
     if largura >= img.width:
         return img
     altura = max(1, round(img.height * largura / img.width))
     return img.resize((largura, altura), Image.Resampling.LANCZOS)
+
+
+ORIENTACAO = 0x0112
+
+# Orientações EXIF que `exif_transpose` aplica de verdade (1 é "como está") e,
+# entre elas, as que giram 90 graus (5 a 8) e por isso trocam os eixos.
+_TRANSPOSTAS = frozenset(range(2, 9))
+_GIRA_90 = frozenset(range(5, 9))
+
+# Chunks de texto que NÃO são copiados quando os pixels foram transpostos: ambos
+# trariam de volta a orientação já aplicada e a imagem seria girada duas vezes.
+_TEXTO_COM_ORIENTACAO = frozenset({"Raw profile type exif", "XML:com.adobe.xmp"})
+
+
+def _metadados(aberta: Image.Image, transposta: bool) -> dict[str, object]:
+    """O que o Pillow não carrega sozinho ao salvar uma cópia: DPI (pHYs) e
+    chunks de texto (tEXt, zTXt, iTXt).
+
+    Preservados: perfil ICC (tratado em `codificar`), EXIF, DPI e texto. NÃO
+    preservados nos degraus com perda: gAMA, cHRM, sRGB, sBIT, bKGD, tIME e
+    qualquer outro chunk auxiliar; a animação de um APNG (fica só o primeiro
+    quadro); e a diferença entre tEXt e zTXt (tudo volta como tEXt, ou iTXt
+    quando o original era). Os degraus sem perda copiam o arquivo e mantêm
+    tudo isso.
+    """
+    extras: dict[str, object] = {}
+    texto = PngImagePlugin.PngInfo()
+    tem_texto = False
+    for chave, valor in getattr(aberta, "text", {}).items():
+        if transposta and chave in _TEXTO_COM_ORIENTACAO:
+            continue
+        texto.add_text(chave, valor)
+        tem_texto = True
+    if tem_texto:
+        extras["pnginfo"] = texto
+    return extras
 
 
 def codificar(
@@ -148,6 +189,13 @@ def codificar(
     Sem perda (`colors=None` e escala 100%) o arquivo é copiado como está
     antes do oxipng, em vez de decodificado e salvo de novo: assim nenhum
     modo, profundidade de bits ou chunk passa por conversão do Pillow.
+    Orientação EXIF: nos degraus com perda os pixels são girados de verdade
+    (`exif_transpose`) ANTES de escalar e a tag sai do arquivo, como no JPEG e
+    no WebP. Nos sem perda o arquivo é copiado como está, com a tag: a imagem
+    EXIBIDA é a mesma nos dois casos. DPI e texto também sobrevivem aos
+    degraus com perda (ver `_metadados`); o DPI acompanha a escala, para que
+    o tamanho no papel não mude.
+
     Sem oxipng instalado esse estágio é pulado — o modo degradado, como o GIF
     sem gifsicle: os degraus com perda saem do Pillow (com `optimize`) e os
     sem perda ficam iguais à entrada.
@@ -159,14 +207,37 @@ def codificar(
         else:
             with Image.open(src) as aberta:
                 # `resize` e `quantize` não carregam todo o `info`; o perfil
-                # ICC sai de `aberta` e vai explícito ao `save`, senão uma
-                # imagem de gamut largo mudaria de cor em silêncio.
+                # ICC, o EXIF e o DPI saem de `aberta` e vão explícitos ao
+                # `save`, senão uma imagem de gamut largo mudaria de cor em
+                # silêncio.
                 perfil = aberta.info.get("icc_profile")
-                img = _para_rgb_ou_rgba(_para_8_bits(aberta))
-                img = _escalar(img, info, params.scale_pct)
+                dpi = aberta.info.get("dpi")
+                orientacao = aberta.getexif().get(ORIENTACAO)
+                girou = orientacao in _GIRA_90
+                # Devolve uma cópia já girada e com a tag removida do EXIF.
+                img = ImageOps.exif_transpose(aberta)
+                exif = img.getexif()
+                extras = _metadados(aberta, orientacao in _TRANSPOSTAS)
+                img = _para_rgb_ou_rgba(_para_8_bits(img))
+                largura_antes, altura_antes = img.size
+                img = _escalar(img, params.scale_pct)
                 if params.colors is not None:
                     img = _quantizar(img, params.colors)
-                img.save(dst, format="PNG", optimize=True, icc_profile=perfil)
+                if dpi is not None:
+                    if girou:
+                        dpi = (dpi[1], dpi[0])
+                    extras["dpi"] = (
+                        dpi[0] * img.width / largura_antes,
+                        dpi[1] * img.height / altura_antes,
+                    )
+                img.save(
+                    dst,
+                    format="PNG",
+                    optimize=True,
+                    icc_profile=perfil,
+                    exif=exif if len(exif) else b"",
+                    **extras,
+                )
 
         if tools.oxipng is not None:
             executar(build_oxipng_cmd(tools, dst, params), "oxipng")

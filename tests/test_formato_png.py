@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from PIL import Image, ImageChops, ImageCms, ImageDraw
+from PIL import Image, ImageChops, ImageCms, ImageDraw, ImageOps
 
 from gifc import formatos
 from gifc.compress import compress_file
@@ -462,3 +462,188 @@ def test_oxipng_binario_roda(ferramentas):
         [ferramentas.oxipng, "--version"], capture_output=True, text=True
     )
     assert proc.returncode == 0 and "oxipng" in proc.stdout.lower()
+
+
+# --- metadados: orientação EXIF, DPI e texto -------------------------------
+#
+# Os degraus 0 e 1 COPIAM o arquivo (o chunk eXIf segue com a tag de
+# orientação, e os pixels ficam como estavam); os com perda salvam de novo.
+# Se estes não tratassem a orientação como o JPEG e o WebP tratam, o degrau
+# escolhido pela busca decidiria se a imagem aparece girada 90 graus.
+
+ORIENTACAO = 0x0112
+
+
+def _png_rotulado(
+    destino: Path, tamanho=(400, 200), orientacao=6, **extra
+) -> Path:
+    """Metade esquerda vermelha, metade direita azul e um quadrado verde no
+    canto, com a tag de orientação num chunk eXIf. Girada por `orientacao` 6 (90 graus horários), a imagem
+    exibida é um retrato com o VERMELHO NO TOPO."""
+    larg, alt = tamanho
+    img = Image.new("RGB", tamanho)
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 0, larg // 2 - 1, alt - 1), fill=(220, 30, 30))
+    d.rectangle((larg // 2, 0, larg - 1, alt - 1), fill=(30, 30, 220))
+    d.rectangle((0, 0, 29, 29), fill=(30, 200, 30))   # tira a simetria: as 8 orientações se distinguem
+    exif = Image.Exif()
+    exif[ORIENTACAO] = orientacao
+    exif[0x010F] = "Camera Teste"      # Make
+    img.save(destino, "PNG", exif=exif, **extra)
+    return destino
+
+
+def _exibida(caminho: Path) -> Image.Image:
+    """Como um visualizador que respeita o eXIf mostraria o arquivo."""
+    with Image.open(caminho) as img:
+        return ImageOps.exif_transpose(img).convert("RGB")
+
+
+def _topo_e_base(img: Image.Image):
+    return (
+        img.getpixel((img.width // 2, img.height // 4)),
+        img.getpixel((img.width // 2, 3 * img.height // 4)),
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("com_oxipng", [True, False], ids=["oxipng", "sem-oxipng"])
+@pytest.mark.parametrize("indice", [0, 1, 2, 5, 9])
+def test_a_orientacao_exibida_sobrevive_a_qualquer_degrau(
+    ferramentas, tmp_path, indice, com_oxipng
+):
+    """O defeito: o degrau 0 devolvia `{274: 6}` e o 2 devolvia `{}` com os
+    pixels não girados, então um visualizador mostrava os dois a 90 graus um
+    do outro, a partir da MESMA entrada."""
+    src = _png_rotulado(tmp_path / "girada.png")
+    esperada = _exibida(src)
+    assert esperada.size == (200, 400)      # pré-condição: a tag gira de fato
+    topo, base = _topo_e_base(esperada)
+    assert topo[0] > 150 > topo[2] and base[2] > 150 > base[0]
+
+    dst = tmp_path / "saida.png"
+    codificar(src, dst, TABELA[indice], probe(src), ferramentas if com_oxipng else SEM_OXIPNG)
+
+    saida = _exibida(dst)
+    assert saida.height == 2 * saida.width                        # continua retrato
+    if TABELA[indice].scale_pct != 100:
+        # a escala parte da largura EXIBIDA (200), não da armazenada (400)
+        assert saida.width == target_width(200, TABELA[indice].scale_pct)
+    topo, base = _topo_e_base(saida)
+    assert topo[0] > 150 > topo[2], "o vermelho deixou de estar no topo"
+    assert base[2] > 150 > base[0]
+    with Image.open(dst) as s:
+        marcada = s.getexif().get(ORIENTACAO)
+    if TABELA[indice].colors is None and TABELA[indice].scale_pct == 100:
+        assert marcada == 6      # sem perda: arquivo e pixels como estavam
+    else:
+        assert marcada in (None, 1), "a tag ficou e os pixels já foram girados"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("orientacao", [2, 3, 4, 5, 6, 7, 8])
+def test_toda_orientacao_exif_e_resolvida_no_degrau_com_perda(tmp_path, orientacao):
+    src = _png_rotulado(tmp_path / "o.png", orientacao=orientacao)
+    esperada = _exibida(src)
+    dst = tmp_path / "saida.png"
+    codificar(src, dst, TABELA[3], probe(src), SEM_OXIPNG)   # 128 cores, 100%
+    saida = _exibida(dst)
+    assert saida.size == esperada.size
+    assert _diferem(esperada, saida) is None     # três cores: a quantização é exata
+    with Image.open(dst) as s:
+        assert s.getexif().get(ORIENTACAO) in (None, 1)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("indice", [0, 2, 9])
+def test_o_resto_do_exif_e_mantido(tmp_path, indice):
+    src = _png_rotulado(tmp_path / "g.png")
+    dst = tmp_path / "saida.png"
+    codificar(src, dst, TABELA[indice], probe(src), SEM_OXIPNG)
+    with Image.open(dst) as s:
+        assert s.getexif().get(0x010F) == "Camera Teste"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("indice", [0, 2, 9])
+def test_png_sem_exif_continua_sem_exif(tmp_path, indice):
+    src = _png_de_interface(tmp_path / "ui.png")
+    dst = tmp_path / "saida.png"
+    codificar(src, dst, TABELA[indice], probe(src), SEM_OXIPNG)
+    with Image.open(dst) as s:
+        assert len(s.getexif()) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("indice, fator", [(0, 1.0), (2, 1.0), (6, 0.85), (9, 0.5)])
+def test_dpi_e_mantido_e_acompanha_a_escala(tmp_path, indice, fator):
+    """O pHYs diz quantos pixels cabem numa polegada. Reduzir os pixels sem
+    reduzir o valor encolheria a imagem no papel: ele acompanha a escala."""
+    src = _png_de_interface(tmp_path / "ui.png")
+    with Image.open(src) as img:
+        img.load()
+        img.save(src, dpi=(300, 300))
+    dst = tmp_path / "saida.png"
+    codificar(src, dst, TABELA[indice], probe(src), SEM_OXIPNG)
+    with Image.open(dst) as s:
+        dpi_x, dpi_y = s.info["dpi"]
+        largura = s.width
+    assert largura == (1280 if indice < 6 else target_width(1280, TABELA[indice].scale_pct))
+    esperado = 300 * largura / 1280
+    assert dpi_x == pytest.approx(esperado, rel=0.01)
+    assert dpi_y == pytest.approx(esperado, rel=0.02)
+
+
+@pytest.mark.integration
+def test_dpi_troca_de_eixo_quando_a_imagem_e_girada(tmp_path):
+    src = _png_rotulado(tmp_path / "g.png", dpi=(300, 150))
+    dst = tmp_path / "saida.png"
+    codificar(src, dst, TABELA[2], probe(src), SEM_OXIPNG)
+    with Image.open(dst) as s:
+        dpi_x, dpi_y = s.info["dpi"]
+    # a coluna de pixels do arquivo virou a linha da imagem exibida
+    assert dpi_x == pytest.approx(150, rel=0.01)
+    assert dpi_y == pytest.approx(300, rel=0.01)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("indice", [0, 2, 9])
+def test_chunks_de_texto_sao_mantidos(tmp_path, indice):
+    from PIL import PngImagePlugin
+
+    info = PngImagePlugin.PngInfo()
+    info.add_text("Author", "Fulana de Tal")
+    info.add_text("Descrição", PngImagePlugin.iTXt("ação é vida", "pt", "Descrição"))
+    src = tmp_path / "t.png"
+    _png_de_interface(src)
+    with Image.open(src) as img:
+        img.load()
+        img.save(src, pnginfo=info)
+    dst = tmp_path / "saida.png"
+    codificar(src, dst, TABELA[indice], probe(src), SEM_OXIPNG)
+    with Image.open(dst) as s:
+        s.load()
+        assert s.text.get("Author") == "Fulana de Tal"
+        assert s.text.get("Descrição") == "ação é vida"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("girada", [True, False], ids=["girada", "sem-giro"])
+def test_xmp_nao_volta_a_girar_a_imagem(tmp_path, girada):
+    """O XMP pode repetir a orientação (tiff:Orientation). Copiá-lo depois de
+    girar os pixels a faria ser aplicada duas vezes; sem giro ele é mantido."""
+    from PIL import PngImagePlugin
+
+    info = PngImagePlugin.PngInfo()
+    info.add_text("Author", "Fulana")
+    info.add_text(
+        "XML:com.adobe.xmp",
+        PngImagePlugin.iTXt("<x:xmpmeta/>", "", "XML:com.adobe.xmp"),
+    )
+    src = _png_rotulado(tmp_path / "g.png", orientacao=6 if girada else 1, pnginfo=info)
+    dst = tmp_path / "saida.png"
+    codificar(src, dst, TABELA[2], probe(src), SEM_OXIPNG)
+    with Image.open(dst) as s:
+        s.load()
+        assert s.text.get("Author") == "Fulana"
+        assert ("XML:com.adobe.xmp" in s.text) is (not girada)
