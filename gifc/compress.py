@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -115,6 +115,20 @@ def _sondar(
         return Attempt(index, params, FALHOU, exc.mensagem)
 
 
+def _sondar_prefixo(
+    escada: Sequence[Any],
+    n_prefixo: int,
+    encode_fn: Callable[[int, Any], int],
+    should_cancel: CancelFn | None,
+) -> Iterator[Attempt[Any]]:
+    """Sonda os degraus do prefixo sem perda, em ordem e um a um. É preguiçoso:
+    quem consome decide se o próximo chega a ser codificado."""
+    for i in range(n_prefixo):
+        if should_cancel is not None and should_cancel():
+            raise Cancelled()
+        yield _sondar(i, escada[i], encode_fn)
+
+
 def buscar(
     escada: Sequence[Any],
     n_prefixo: int,
@@ -149,10 +163,7 @@ def buscar(
             on_progress(tentativa, total)
 
     cabe_no_prefixo = False
-    for i in range(n_prefixo):
-        if should_cancel is not None and should_cancel():
-            raise Cancelled()
-        tentativa = _sondar(i, escada[i], encode_fn)
+    for tentativa in _sondar_prefixo(escada, n_prefixo, encode_fn, should_cancel):
         registrar(tentativa)
         if tentativa.size_bytes <= alvo:
             cabe_no_prefixo = True
@@ -185,6 +196,42 @@ def buscar(
     )
 
 
+def medir_sem_perda(
+    escada: Sequence[Any],
+    n_prefixo: int,
+    encode_fn: Callable[[int, Any], int],
+    on_progress: ProgressFn | None = None,
+    should_cancel: CancelFn | None = None,
+) -> SearchResult[Any] | None:
+    """O MENOR resultado entre os degraus sem perda de `escada`, ou `None`
+    se ela não tem nenhum.
+
+    É o regime de uma entrada que JÁ cabe no alvo: aí o pedido é "menor de
+    graça", não "menor a qualquer custo", e só o que não perde nada entra em
+    consideração. Todos os do prefixo são medidos (são equivalentes em
+    qualidade, então vale o menor tamanho, não o primeiro) e nenhum com perda.
+    `hit_target` aqui só diz que algo foi medido; quem chama o recalcula
+    contra o alvo do usuário.
+    """
+    total = len(escada)
+    tentativas: list[Attempt[Any]] = []
+    for tentativa in _sondar_prefixo(escada, n_prefixo, encode_fn, should_cancel):
+        tentativas.append(tentativa)
+        if on_progress is not None:
+            on_progress(tentativa, total)
+    if not tentativas:
+        return None
+    # `min` fica com o primeiro dos empatados: o de menor índice.
+    menor = min(tentativas, key=lambda t: t.size_bytes)
+    return SearchResult(
+        index=menor.index,
+        params=menor.params,
+        size_bytes=menor.size_bytes,
+        hit_target=menor.size_bytes != FALHOU,
+        attempts=tentativas,
+    )
+
+
 def compress_file(
     src: Path,
     target_bytes: int,
@@ -207,13 +254,19 @@ def compress_file(
     saida = formatos.formato_de_saida(info.formato, converter_webp)
     modulo = formatos.para(saida)
     escada, n_prefixo = montar_escada(saida, info, toggles, tools)
-    # Um alvo >= à entrada não é restrição: pede-se "menor", não "qualquer
-    # coisa abaixo de 10 MB". Sem este limite um degrau de alta qualidade
-    # MAIOR que a entrada (o sem perda do WebP numa foto) caberia no alvo,
-    # venceria por ser o de maior qualidade, e `already_optimized` devolveria
-    # o original apesar de um degrau menor já ter sido medido. O limite é só
-    # da busca: `hit_target` continua sendo contra o alvo do usuário.
-    alvo_da_busca = max(0, min(target_bytes, info.size_bytes - 1))
+    # Dois regimes, separados pelo alvo do USUÁRIO contra a entrada:
+    #
+    # - A entrada NÃO cabe no alvo: percorre-se a escada o quanto for preciso
+    #   (`buscar`). O alvo é, então, menor que a entrada.
+    # - A entrada JÁ cabe: o melhor resultado que cabe no alvo é a própria
+    #   entrada, e "menor" passa a significar "menor de graça". Só os degraus
+    #   sem perda são considerados (`medir_sem_perda`), e se nenhum encolhe o
+    #   arquivo a resposta é `already_optimized`. Sem este piso, o alvo padrão
+    #   de 10 MB faria o PNG que a própria ferramenta gerou ser quantizado a
+    #   128 cores só para economizar 2 KB num arquivo que já cabia 2 mil vezes.
+    #   (O contrário também valia: sem limitar a busca, o degrau sem perda do
+    #   WebP, maior que uma foto, "cabia" no alvo e fazia o original voltar.)
+    entrada_cabe_no_alvo = info.size_bytes <= target_bytes
 
     tmpdir = Path(tempfile.mkdtemp(prefix="gifc_"))
     try:
@@ -236,23 +289,30 @@ def compress_file(
             assert ultimo_erro is not None  # o loop rodou 2x e sempre falhou
             raise RungFailed(str(ultimo_erro))
 
-        resultado = buscar(
-            escada, n_prefixo, alvo_da_busca, encode_fn,
-            on_progress=on_progress, should_cancel=should_cancel,
-        )
+        resultado: SearchResult[Any] | None
+        if entrada_cabe_no_alvo:
+            resultado = medir_sem_perda(
+                escada, n_prefixo, encode_fn,
+                on_progress=on_progress, should_cancel=should_cancel,
+            )
+        else:
+            resultado = buscar(
+                escada, n_prefixo, target_bytes, encode_fn,
+                on_progress=on_progress, should_cancel=should_cancel,
+            )
 
-        if resultado.size_bytes == FALHOU:
+        if resultado is not None and resultado.size_bytes == FALHOU:
             raise CompressError(
                 f"Nenhuma configuração conseguiu comprimir {src.name}. "
                 f"O arquivo pode estar corrompido."
             )
 
-        vencedor = _try_path(tmpdir, resultado.index, saida)
-
         # Arquivos já muito otimizados podem crescer ao serem reescritos, e um
         # WebP pode ficar maior que o PNG/JPEG de origem. Em ambos os casos o
-        # original é copiado, no formato (e na extensão) dele.
-        if resultado.size_bytes >= info.size_bytes:
+        # original é copiado, no formato (e na extensão) dele. Também é o caso
+        # de uma entrada que já cabe no alvo e não tem degrau sem perda
+        # (`resultado is None`: GIF e JPEG) ou cujo sem perda não a encolhe.
+        if resultado is None or resultado.size_bytes >= info.size_bytes:
             dst = unique_output_path(src, info.formato)
             shutil.copy2(src, dst)
             return CompressResult(
@@ -264,9 +324,10 @@ def compress_file(
                 already_optimized=True,
                 formato_entrada=info.formato,
                 formato_saida=info.formato,
-                attempts=resultado.attempts,
+                attempts=[] if resultado is None else resultado.attempts,
             )
 
+        vencedor = _try_path(tmpdir, resultado.index, saida)
         dst = unique_output_path(src, saida)
         shutil.move(str(vencedor), str(dst))
         return CompressResult(
@@ -274,9 +335,6 @@ def compress_file(
             original_bytes=info.size_bytes,
             final_bytes=dst.stat().st_size,
             params=resultado.params,
-            # Aqui o resultado é menor que a entrada, logo `alvo_da_busca` e o
-            # alvo do usuário só divergem a favor dele: acertar um implica o
-            # outro. Mesmo assim mede-se contra o alvo do usuário.
             hit_target=resultado.size_bytes <= target_bytes,
             already_optimized=False,
             formato_entrada=info.formato,

@@ -12,7 +12,7 @@ from gifc.formatos.base import EncodeError
 from gifc.ladder import Toggles
 from gifc.probe import Formato, ImagemInfo
 from gifc.tools import Tools
-from tests.imagens import captura_de_tela
+from tests.imagens import captura_de_tela, degrade
 
 TODOS = Toggles(True, True, True, True)
 
@@ -269,7 +269,8 @@ def test_sem_gifsicle_descarta_a_coluna_lossy(tmp_path, monkeypatch):
         return d.stat().st_size
 
     monkeypatch.setattr(formato_gif, "codificar", encode_ok)
-    mod.compress_file(src, 1_000_000, TODOS, tools)
+    # alvo abaixo da entrada (5.006 B): acima dela nada seria codificado
+    mod.compress_file(src, 4_000, TODOS, tools)
 
     assert vistos
     assert all(p.lossy == 0 for p in vistos)
@@ -289,13 +290,32 @@ def test_comprime_e_atinge_alvo_generoso(tools, gif_pequeno, tmp_path):
 
 
 @pytest.mark.integration
-def test_alvo_generoso_usa_o_degrau_de_maior_qualidade(tools, gif_pequeno, tmp_path):
+def test_alvo_folgado_nao_mexe_num_gif_que_ja_cabe(tools, gif_pequeno, tmp_path):
+    """GIF não tem degrau sem perda: com a entrada dentro do alvo (aqui o
+    padrão de 10 MB) o original volta como está, sem perder cor, resolução
+    nem framerate."""
     copia = tmp_path / "entrada.gif"
     copia.write_bytes(gif_pequeno.read_bytes())
 
     r = compress_file(copia, target_bytes=10_000_000, toggles=TODOS, tools=tools)
 
-    # Alvo folgado: não deve sacrificar resolução nem framerate.
+    assert r.already_optimized is True and r.params is None
+    assert r.hit_target is True
+    assert r.dst.read_bytes() == copia.read_bytes() and r.dst != copia
+
+
+@pytest.mark.integration
+def test_alvo_logo_abaixo_da_entrada_nao_sacrifica_resolucao_nem_framerate(
+    tools, gif_pequeno, tmp_path
+):
+    copia = tmp_path / "entrada.gif"
+    copia.write_bytes(gif_pequeno.read_bytes())
+
+    r = compress_file(
+        copia, target_bytes=copia.stat().st_size - 1, toggles=TODOS, tools=tools
+    )
+
+    # Folgado o bastante para o degrau 0: não deve sacrificar o resto.
     assert r.params is not None
     assert r.params.scale_pct == 100
     assert r.params.fps is None
@@ -432,10 +452,11 @@ def test_comprime_cada_formato(formato, tmp_path, request):
     src = _arquivo_real(formato, tmp_path, request)
     original = src.stat().st_size
     antes = src.read_bytes()
-    if formato is Formato.GIF:
-        alvo, ferramentas = 10_000_000, request.getfixturevalue("tools")
-    else:
-        alvo, ferramentas = original // 2, SEM_FERRAMENTAS
+    alvo = original // 2
+    ferramentas = (
+        request.getfixturevalue("tools") if formato is Formato.GIF
+        else SEM_FERRAMENTAS
+    )
 
     r = compress_file(src, alvo, TODOS, ferramentas)
 
@@ -454,8 +475,7 @@ def test_comprime_cada_formato(formato, tmp_path, request):
     assert not r.already_optimized
     assert isinstance(r.params, formatos.para(formato).Params)
     assert r.params in formatos.para(formato).TABELA
-    if formato is not Formato.GIF:
-        assert r.hit_target is True and r.final_bytes <= alvo
+    assert r.hit_target is True and r.final_bytes <= alvo
 
 
 @pytest.mark.parametrize("entrada", [Formato.PNG, Formato.JPEG])
@@ -486,7 +506,9 @@ def test_converter_webp_nao_afeta_gif(tools, gif_pequeno, tmp_path):
     copia = tmp_path / "entrada.gif"
     copia.write_bytes(gif_pequeno.read_bytes())
 
-    r = compress_file(copia, 10_000_000, TODOS, tools, converter_webp=True)
+    r = compress_file(
+        copia, copia.stat().st_size // 2, TODOS, tools, converter_webp=True
+    )
 
     assert r.formato_entrada is Formato.GIF
     assert r.formato_saida is Formato.GIF
@@ -505,8 +527,9 @@ def test_converter_webp_so_vale_para_png_e_jpeg(tmp_path, monkeypatch, entrada):
     falso, vistos = _codificador_falso(100)
     monkeypatch.setattr(modulo, "codificar", falso)
 
+    # alvo abaixo da entrada (5.000 B): acima dela só o sem perda é medido
     r = mod.compress_file(
-        src, 1_000_000, TODOS, Tools("ffmpeg", "ffprobe", "gifsicle"),
+        src, 4_000, TODOS, Tools("ffmpeg", "ffprobe", "gifsicle"),
         converter_webp=True,
     )
 
@@ -532,7 +555,7 @@ def test_resultado_carrega_os_dois_formatos(tmp_path, monkeypatch, entrada):
     modulo = formatos.para(entrada)
     falso, vistos = _codificador_falso(100)
     monkeypatch.setattr(modulo, "codificar", falso)
-    mesmo = mod.compress_file(src, 1_000_000, TODOS, SEM_FERRAMENTAS)
+    mesmo = mod.compress_file(src, 4_000, TODOS, SEM_FERRAMENTAS)
     assert mesmo.formato_entrada is entrada
     assert mesmo.formato_saida is entrada
     assert mesmo.dst.suffix == formatos.extensao(entrada)
@@ -624,7 +647,12 @@ def test_conversao_sem_ganho_nao_deixa_tmpdir_nem_webp(tmp_path, monkeypatch):
     assert {p.name for p in tmp_path.iterdir()} == {src.name, r.dst.name}
 
 
-# --- alvo folgado não é restrição -----------------------------------------
+# --- entrada que já cabe no alvo: só o que é de graça ----------------------
+#
+# Um alvo que a entrada já cumpre pede "menor de graça", não "menor a
+# qualquer custo". Nesse regime só o prefixo sem perda é considerado; se ele
+# não encolhe o arquivo, a resposta é `already_optimized`. Com a entrada FORA
+# do alvo a escada é percorrida o quanto for preciso.
 
 
 def _tamanho_pelo_degrau(monkeypatch, base: int, passo: int) -> None:
@@ -639,30 +667,166 @@ def _tamanho_pelo_degrau(monkeypatch, base: int, passo: int) -> None:
     monkeypatch.setattr(formato_webp, "codificar", falso)
 
 
-@pytest.mark.parametrize("alvo", [10_000_000, 5_000, 4_999])
-def test_alvo_maior_ou_igual_a_entrada_vira_menor_que_a_entrada(
+# Uma curva que SOBE antes de cair, como a do WebP em foto: o sem perda é MAIOR
+# que a entrada de 5.000 B e os degraus com perda são menores. É o tipo de
+# curva que a de cima (monótona) nunca produziria.
+WEBP_FOTO = [9_000, 4_800, 4_200, 3_900, 3_500, 3_100, 2_900, 2_000, 1_800, 1_500, 1_000]
+# E a arte chapada: o sem perda é menor que a entrada, os com perda não.
+WEBP_FLAT = [1_200, 9_000, 8_000, 7_000, 6_000, 5_500, 5_200, 4_000, 3_500, 3_000, 2_000]
+
+
+@pytest.mark.parametrize("alvo", [10_000_000, 5_000])   # 5.000 = a entrada
+def test_entrada_que_ja_cabe_no_alvo_so_considera_o_sem_perda(
     tmp_path, monkeypatch, alvo
 ):
-    """Um alvo >= à entrada não é restrição: pede-se "menor", não "qualquer
-    coisa abaixo de 10 MB". O degrau vencedor é o de maior qualidade que
-    ficou realmente menor que a entrada, e não o degrau 0 (maior que ela),
-    que faria o original ser devolvido com uma economia já calculada."""
+    """O sem perda do WebP (9.000 B) é maior que a entrada de 5.000 B: não há
+    ganho de graça, e os degraus com perda, que dariam, NÃO são tentados. O
+    original volta, e `hit_target` é contra o alvo do usuário."""
     mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.JPEG)
-    _tamanho_pelo_degrau(monkeypatch, base=6_000, passo=500)
-    efetivo = min(alvo, info.size_bytes - 1)
-    esperado = next(
-        i for i in range(len(formato_webp.TABELA)) if 6_000 - 500 * i <= efetivo
-    )
-    assert esperado > 0   # o degrau 0 é maior que a entrada: o caso do bug
+    assert alvo >= info.size_bytes
+    codificados = _curva_falsa(monkeypatch, formato_webp, WEBP_FOTO)
 
     r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
-    assert r.already_optimized is False
-    assert r.formato_saida is Formato.WEBP
-    assert r.params == formato_webp.TABELA[esperado]
-    assert r.final_bytes < info.size_bytes
-    # hit_target é contra o alvo do USUÁRIO, não contra o limite interno.
+    assert codificados == [0]
+    assert r.already_optimized is True and r.params is None
+    assert r.formato_saida is Formato.JPEG
+    assert r.dst.read_bytes() == src.read_bytes()
     assert r.hit_target is True
+    assert [a.index for a in r.attempts] == [0]
+
+
+@pytest.mark.parametrize("alvo", [10_000_000, 5_000])
+def test_entrada_que_ja_cabe_usa_o_sem_perda_quando_ele_encolhe(
+    tmp_path, monkeypatch, alvo
+):
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    codificados = _curva_falsa(monkeypatch, formato_webp, WEBP_FLAT)
+
+    r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert codificados == [0]      # nenhum com perda, mesmo havendo ganho maior
+    assert r.already_optimized is False
+    assert r.params == formato_webp.TABELA[0] and r.final_bytes == 1_200
+    assert r.hit_target is True
+
+
+def test_png_ja_otimizado_nao_e_quantizado_para_economizar_um_pouco(
+    tmp_path, monkeypatch
+):
+    """O caso que motivou o piso: o PNG que a própria ferramenta gerou, solto
+    de novo com o alvo padrão de 10 MB. Os degraus 3 em diante (128 cores...)
+    renderiam alguns KB, num arquivo que já cabia no alvo mil vezes."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    # 0 e 1 (sem perda) mal encolhem; 2 em diante, quantizados, encolhem mais
+    tamanhos = [4_900, 4_850, 5_068, 2_641, 3_323, 2_259, 2_000, 1_900, 1_800, 1_700]
+    codificados = _curva_falsa(monkeypatch, formato_png, tamanhos)
+
+    r = mod.compress_file(src, 10_000_000, TODOS, COM_OXIPNG)
+
+    assert codificados == [0, 1]
+    assert r.params == formato_png.TABELA[1]   # o MENOR do prefixo, não o primeiro
+    assert r.params.colors is None and r.params.scale_pct == 100
+    assert r.final_bytes == 4_850 and r.hit_target is True
+
+
+@pytest.mark.parametrize("formato", [Formato.GIF, Formato.JPEG])
+def test_formato_sem_degrau_sem_perda_nao_e_tocado_se_ja_cabe(
+    tmp_path, monkeypatch, formato
+):
+    """GIF e JPEG não têm degrau sem perda: com a entrada dentro do alvo, nada
+    é codificado e o original é devolvido, com o motivo dito."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, formato)
+    modulo = formatos.para(formato)
+    falso, vistos = _codificador_falso(100)
+    monkeypatch.setattr(modulo, "codificar", falso)
+
+    r = mod.compress_file(
+        src, 10_000_000, TODOS, Tools("ffmpeg", "ffprobe", "gifsicle")
+    )
+
+    assert vistos == []
+    assert r.already_optimized is True and r.attempts == []
+    assert r.formato_saida is formato and r.hit_target is True
+    assert r.dst.read_bytes() == src.read_bytes() and r.dst != src
+
+
+def test_entrada_que_ja_cabe_com_todos_os_degraus_sem_perda_falhando_e_erro(
+    tmp_path, monkeypatch
+):
+    """Se o que se tentou falhou em tudo, não é "já otimizado": é um erro."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+
+    def quebrado(s, d, params, i, t):
+        raise EncodeError("quebrado")
+
+    monkeypatch.setattr(formato_webp, "codificar", quebrado)
+
+    with pytest.raises(mod.CompressError):
+        mod.compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+
+def test_entrada_que_ja_cabe_um_degrau_sem_perda_falho_nao_derruba_o_outro(
+    tmp_path, monkeypatch
+):
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+
+    def falso(s, d, params, i, t):
+        if formato_png.TABELA.index(params) == 0:
+            raise EncodeError("oxipng falhou")
+        d.write_bytes(b"w" * 4_000)
+        return 4_000
+
+    monkeypatch.setattr(formato_png, "codificar", falso)
+
+    r = mod.compress_file(src, 10_000_000, TODOS, COM_OXIPNG)
+
+    assert r.params == formato_png.TABELA[1] and r.final_bytes == 4_000
+    assert next(a for a in r.attempts if a.index == 0).erro == "oxipng falhou"
+
+
+def test_entrada_que_ja_cabe_respeita_o_cancelamento(tmp_path, monkeypatch):
+    from gifc.search import Cancelled
+
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    codificados = _curva_falsa(monkeypatch, formato_webp, WEBP_FLAT)
+
+    with pytest.raises(Cancelled):
+        mod.compress_file(
+            src, 10_000_000, TODOS, SEM_FERRAMENTAS, converter_webp=True,
+            should_cancel=lambda: True,
+        )
+    assert codificados == []
+
+
+def test_entrada_um_byte_acima_do_alvo_percorre_a_escada(tmp_path, monkeypatch):
+    """A fronteira: com a entrada UM byte acima do alvo, ela não cabe, e a
+    escada é percorrida até onde for preciso (aqui, os com perda)."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.JPEG)
+    codificados = _curva_falsa(monkeypatch, formato_webp, WEBP_FOTO)
+    alvo = info.size_bytes - 1
+
+    r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert codificados[0] == 0 and len(codificados) > 1
+    assert r.already_optimized is False
+    assert r.params == formato_webp.TABELA[1] and r.final_bytes == 4_800
+    assert r.hit_target is True
+
+
+def test_alvo_abaixo_da_entrada_acha_o_de_maior_qualidade_numa_curva_irregular(
+    tmp_path, monkeypatch
+):
+    """Curva com uma inversão na cauda (degrau 4 maior que o 3): a que os
+    testes monótonos antigos nunca exerciam. O degrau 3 cabe e é o de maior
+    qualidade; a bisecção, por sorte da curva, também o acha."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.JPEG)
+    tamanhos = [9_000, 8_000, 7_000, 3_800, 4_300, 3_000, 2_900, 2_000, 1_800, 1_500, 1_000]
+    _curva_falsa(monkeypatch, formato_webp, tamanhos)
+
+    r = mod.compress_file(src, 3_900, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert r.params == formato_webp.TABELA[3] and r.hit_target is True
 
 
 def test_alvo_abaixo_da_entrada_segue_inalterado(tmp_path, monkeypatch):
@@ -683,7 +847,7 @@ def test_alvo_abaixo_da_entrada_segue_inalterado(tmp_path, monkeypatch):
 def test_alvo_abaixo_da_entrada_e_inatingivel_continua_sem_atingir(
     tmp_path, monkeypatch
 ):
-    """O limite interno não pode transformar "não deu" em "deu"."""
+    """O regime não pode transformar "não deu" em "deu"."""
     mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.JPEG)
     _tamanho_pelo_degrau(monkeypatch, base=4_900, passo=10)
 
@@ -695,8 +859,8 @@ def test_alvo_abaixo_da_entrada_e_inatingivel_continua_sem_atingir(
 
 
 def test_entrada_minuscula_cai_em_ja_otimizado_sem_quebrar(tmp_path, monkeypatch):
-    """Com 1 byte, `tamanho - 1` é 0: nada é atingível, e o resultado é o
-    original copiado, não um erro nem um alvo negativo."""
+    """Com 1 byte nada o encolhe: o resultado é o original copiado, não um
+    erro nem um alvo negativo."""
     mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
     src.write_bytes(b"x")
     monkeypatch.setattr(mod, "probe", lambda p: ImagemInfo(
@@ -715,37 +879,83 @@ def test_entrada_minuscula_cai_em_ja_otimizado_sem_quebrar(tmp_path, monkeypatch
 
 
 @pytest.mark.integration
-def test_foto_com_conversao_e_alvo_padrao_reduz_de_verdade(tmp_path):
-    """O cenário que motivou o limite: JPEG, alvo folgado (o padrão de 10 MB
-    da interface), conversão ligada. Sem o limite o degrau 0 (lossless, muito
-    maior que a foto) vencia e o original voltava, com 0% de economia."""
+def test_png_ja_otimizado_pela_ferramenta_nao_e_quantizado_de_novo(tools, tmp_path):
+    """De ponta a ponta, com o oxipng de verdade: um degradê que a ferramenta
+    já otimizou, solto de novo com o alvo padrão de 10 MB. Antes ia a 128
+    cores para economizar 1,9 KB."""
+    if tools.oxipng is None:
+        pytest.skip("oxipng não disponível em bin/")
+    src = tmp_path / "degrade.png"
+    degrade().save(src, "PNG", optimize=True)
+
+    r = compress_file(src, 10_000_000, TODOS, tools)
+
+    assert r.hit_target is True
+    assert r.already_optimized or (
+        r.params.colors is None and r.params.scale_pct == 100
+    )
+    with Image.open(src) as a, Image.open(r.dst) as b:
+        assert a.size == b.size
+        assert list(a.convert("RGB").getdata()) == list(b.convert("RGB").getdata())
+
+
+@pytest.mark.integration
+def test_foto_com_conversao_e_alvo_folgado_nao_e_degradada(tmp_path):
+    """JPEG, alvo padrão de 10 MB, conversão ligada: a foto já cabe, e o WebP
+    sem perda é MAIOR que ela. Nada de graça a fazer: o JPEG volta intacto,
+    em vez de ser reencodado com perda a q90 só para ficar menor."""
+    src = tmp_path / "foto.jpg"
+    _textura((640, 480)).save(src, "JPEG", quality=95)
+    original = src.read_bytes()
+
+    r = compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert r.already_optimized is True and r.params is None
+    assert r.formato_saida is Formato.JPEG and r.dst.suffix == ".jpg"
+    assert r.dst.read_bytes() == original
+    assert r.hit_target is True
+    assert not list(tmp_path.glob("*.webp"))
+
+
+@pytest.mark.integration
+def test_foto_com_conversao_e_alvo_apertado_reduz_de_verdade(tmp_path):
+    """Já a mesma foto com um alvo que ela NÃO cumpre: a escada é percorrida
+    e a conversão para WebP com perda entrega."""
     src = tmp_path / "foto.jpg"
     _textura((640, 480)).save(src, "JPEG", quality=95)
     original = src.stat().st_size
 
-    r = compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = compress_file(src, original * 8 // 10, TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert r.already_optimized is False
     assert r.formato_saida is Formato.WEBP and r.dst.suffix == ".webp"
-    assert r.hit_target is True
-    assert r.final_bytes < original * 0.8, (r.final_bytes, original)
+    assert r.hit_target is True and r.final_bytes <= original * 8 // 10
     assert r.params != formato_webp.TABELA[0]
 
 
 @pytest.mark.integration
-def test_webp_com_alvo_folgado_e_sem_conversao_reduz_de_verdade(tmp_path):
-    """Mesma forma, sem conversão: um WebP com perda de entrada também tem o
-    degrau 0 (lossless) maior que ele."""
+def test_webp_com_perda_e_alvo_folgado_nao_e_reencodado(tmp_path):
+    src = tmp_path / "foto.webp"
+    _textura((640, 480)).save(src, "WEBP", quality=95)
+    original = src.read_bytes()
+
+    r = compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS)
+
+    assert r.already_optimized is True and r.hit_target is True
+    assert r.dst.read_bytes() == original
+
+
+@pytest.mark.integration
+def test_webp_com_alvo_apertado_e_sem_conversao_reduz_de_verdade(tmp_path):
     src = tmp_path / "foto.webp"
     _textura((640, 480)).save(src, "WEBP", quality=95)
     original = src.stat().st_size
 
-    r = compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS)
+    r = compress_file(src, original * 8 // 10, TODOS, SEM_FERRAMENTAS)
 
     assert r.already_optimized is False
     assert r.formato_saida is Formato.WEBP
-    assert r.hit_target is True
-    assert r.final_bytes < original * 0.8, (r.final_bytes, original)
+    assert r.hit_target is True and r.final_bytes <= original * 8 // 10
     assert r.params != formato_webp.TABELA[0]
 
 

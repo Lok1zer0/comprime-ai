@@ -65,11 +65,12 @@ _CONVERSIVEIS = frozenset({Formato.PNG, Formato.JPEG})
 
 PRESETS = [("Discord 10", 10.0), ("WhatsApp 16", 16.0), ("5", 5.0), ("2", 2.0)]
 
-# A busca é binária sobre a escada do formato; a maior é a do GIF, com 20
-# degraus (gifc/formatos/gif.py), então o pior caso é floor(log2(20)) + 1 = 5
-# tentativas por arquivo. Usado só para
-# estimar o progresso do lote de forma honesta — não afeta a busca em si.
-TENTATIVAS_ESPERADAS_POR_ARQUIVO = 5
+# Pior caso de codificações por arquivo: o prefixo sem perda do formato (ver
+# `SEM_PERDA`), codificado um a um, mais a busca binária sobre o resto da
+# escada. GIF: 0 + floor(log2(18..20)) + 1 = 5. PNG: 2 + floor(log2(8)) + 1 = 6.
+# WebP: 1 + floor(log2(10)) + 1 = 5. JPEG: 0 + floor(log2(12)) + 1 = 4. Usado só
+# para estimar o progresso do lote de forma honesta — não afeta a busca.
+TENTATIVAS_ESPERADAS_POR_ARQUIVO = 6
 
 # Quanto tempo _ao_fechar espera o worker terminar sozinho (e rodar o seu
 # `finally` de limpeza do tmpdir) antes de destruir a janela de qualquer
@@ -233,6 +234,16 @@ def _texto_resultado(r: CompressResult, converteu_webp: bool = False) -> str:
             and r.formato_entrada in _CONVERSIVEIS
             and r.formato_saida is not Formato.WEBP
         ):
+            if r.hit_target:
+                # O original já cabe no alvo: só o degrau de WebP de maior
+                # qualidade foi medido (os outros custariam qualidade sem
+                # ganho necessário). Sem "sem perda" no texto: para um JPEG de
+                # entrada a interface nunca promete ausência de perda.
+                return (
+                    f"{r.src.name}: o original já cabe no alvo e o WebP de maior "
+                    f"qualidade não ficou menor; cópia mantida ({rotulo}), a "
+                    f"escada de {rotulo} não foi tentada → {r.dst.name}"
+                )
             return (
                 f"{r.src.name}: nenhum degrau de WebP ficou menor que o original; "
                 f"cópia mantida ({rotulo}), a escada de {rotulo} não foi tentada "
