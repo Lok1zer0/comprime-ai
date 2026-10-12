@@ -141,7 +141,10 @@ def _alavancas_aplicaveis(
     escada que o arquivo vai percorrer, e essa escada é a do formato de
     SAÍDA (com a conversão, um PNG percorre a de WebP). Sem arquivos, todas.
     """
-    entradas = set(entradas)
+    # Dedupe que preserva a ordem recebida: iterar um `set` de enum dependeria
+    # do PYTHONHASHSEED, e um bug de união ("=" no lugar de "|=") só apareceria
+    # em parte das execuções.
+    entradas = list(dict.fromkeys(entradas))
     if not entradas:
         return frozenset(ALAVANCAS)
     aplicaveis: set[str] = set()
@@ -202,6 +205,9 @@ def _sem_perda(r: CompressResult) -> bool:
         return False
     if r.formato_entrada not in (Formato.PNG, Formato.WEBP):
         return False
+    # Limite conhecido, não verificado de ponta a ponta: um PNG cinza de 16 bits
+    # passa por `_para_8_bits` em qualquer degrau do WebP (o do PNG copia o
+    # arquivo nos degraus 0-1), então para essa entrada a frase pode ser falsa.
     if r.formato_saida is Formato.PNG:
         return r.params.colors is None and r.params.scale_pct == 100
     if r.formato_saida is Formato.WEBP:
@@ -209,18 +215,32 @@ def _sem_perda(r: CompressResult) -> bool:
     return False
 
 
-def _texto_resultado(r: CompressResult) -> str:
+def _texto_resultado(r: CompressResult, converteu_webp: bool = False) -> str:
     """A linha de resultado de um arquivo.
 
-    Montada só com o que `r` diz que foi ESCRITO (`formato_saida`, `dst`),
-    nunca com o que a caixa de conversão pedia: quando nenhum degrau de WebP
-    ficou menor, o original é copiado e a mensagem não pode prometer um
-    `.webp` que não existe.
+    O que se PROMETE vem só do que `r` diz que foi escrito (`formato_saida`,
+    `dst`): nunca se anuncia um `.webp` que não existe. `converteu_webp` (se o
+    lote pediu a conversão) só serve para EXPLICAR por que o original foi
+    mantido, e só quando `r` confirma que foi isso que aconteceu: entrada PNG
+    ou JPEG, cópia mantida, saída que não é WebP. Com a conversão ligada o
+    arquivo nunca percorreu a escada do próprio formato, então "já estava
+    otimizado" seria uma afirmação sobre ela.
     """
     if r.already_optimized:
+        rotulo = _ROTULO_FORMATO[r.formato_saida]
+        if (
+            converteu_webp
+            and r.formato_entrada in _CONVERSIVEIS
+            and r.formato_saida is not Formato.WEBP
+        ):
+            return (
+                f"{r.src.name}: nenhum degrau de WebP ficou menor que o original; "
+                f"cópia mantida ({rotulo}), a escada de {rotulo} não foi tentada "
+                f"→ {r.dst.name}"
+            )
         return (
             f"{r.src.name}: já estava otimizado, cópia mantida "
-            f"({_ROTULO_FORMATO[r.formato_saida]}) → {r.dst.name}"
+            f"({rotulo}) → {r.dst.name}"
         )
     texto = (
         f"{r.src.name}: {_mb(r.original_bytes)} → {_mb(r.final_bytes)} "
@@ -239,7 +259,7 @@ def _texto_resultado(r: CompressResult) -> str:
 class App(TkinterDnD.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Compressor de GIF")
+        self.title("Comprime Aí")
         self.geometry("580x720")
         self.minsize(480, 600)
 
@@ -253,6 +273,9 @@ class App(TkinterDnD.Tk):
         self._thread: threading.Thread | None = None
         # Formatos do último conjunto solto; vazio antes de qualquer soltura.
         self._entradas: set[Formato] = set()
+        # Se o lote atual pediu a conversão. Gravado em `_processar` (thread
+        # principal) e lido em `_log_resultado` (também): o worker não o toca.
+        self._lote_converteu = False
 
         # Progresso do lote atual (ver _iniciar_lote / _atualizar_progresso).
         self.total_arquivos = 0
@@ -454,6 +477,7 @@ class App(TkinterDnD.Tk):
         # variável Tk. A caixa pode estar marcada e desabilitada (só GIF);
         # o que vale é o que ela pode fazer.
         converter_webp = self.tg_webp.get() and _conversao_possivel(self._entradas)
+        self._lote_converteu = converter_webp
 
         self.trabalhando = True
         self.cancelar.clear()
@@ -613,7 +637,7 @@ class App(TkinterDnD.Tk):
         self.arquivos_concluidos += 1
         self.tentativas_arquivo_atual = 0
         self._atualizar_progresso()
-        self._log(_texto_resultado(r))
+        self._log(_texto_resultado(r, self._lote_converteu))
         if not r.hit_target:
             self._log(
                 f"  ATENÇÃO: não foi possível chegar ao alvo. "

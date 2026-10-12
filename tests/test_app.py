@@ -156,7 +156,7 @@ def app(_janela):
 
 
 def test_app_constroi_e_realiza_widgets_sem_erro(app):
-    assert str(app.title()) == "Compressor de GIF"
+    assert str(app.title()) == "Comprime Aí"
 
 
 def test_app_comeca_ociosa(app):
@@ -477,9 +477,24 @@ def test_png_convertido_para_webp_perde_a_paleta():
     assert _alavancas_aplicaveis({Formato.PNG}, True) == {"scale"}
 
 
-def test_conversao_nao_tira_alavancas_do_gif_misturado():
-    aplicaveis = _alavancas_aplicaveis({Formato.GIF, Formato.PNG}, True)
-    assert aplicaveis == set(ALAVANCAS)
+@pytest.mark.parametrize("ordem", [
+    [Formato.PNG, Formato.GIF], [Formato.GIF, Formato.PNG],
+], ids=["png-primeiro", "gif-primeiro"])
+@pytest.mark.parametrize("converter", [False, True])
+def test_alavancas_de_um_lote_misto_sao_a_uniao_em_qualquer_ordem(ordem, converter):
+    """Recebe LISTAS, de propósito: com um `set` de enum a ordem de iteração
+    muda com o PYTHONHASHSEED, e um `=` no lugar de `|=` só falharia em parte
+    das execuções. Com a ordem explícita, os dois sentidos são exercitados
+    sempre: o resultado é a união, não o da última entrada."""
+    assert _alavancas_aplicaveis(ordem, converter) == set(ALAVANCAS)
+
+
+@pytest.mark.parametrize("ordem", [
+    [Formato.PNG, Formato.JPEG], [Formato.JPEG, Formato.PNG],
+], ids=["png-primeiro", "jpeg-primeiro"])
+def test_uniao_de_png_e_jpeg_sem_conversao_inclui_a_paleta(ordem):
+    """PNG tem paleta, JPEG não: a união tem, em qualquer ordem."""
+    assert _alavancas_aplicaveis(ordem, False) == {"palette", "scale"}
 
 
 def test_nada_solto_nao_restringe_nada():
@@ -665,47 +680,93 @@ def test_extensao_recusada_nao_dispara_o_worker(app, _lote_falso):
 # ---------- o worker não toca em widget ----------
 
 
-def test_worker_repassa_a_conversao_e_nunca_le_variavel_tk(app, monkeypatch, tmp_path):
-    """`_trabalhar` roda numa thread de verdade. Ler `BooleanVar.get()` ali
-    é tocar o Tcl fora da thread principal, então o teste proíbe qualquer
-    acesso a variável Tk fora dela e confere o que chegou ao compress_file."""
+class _TkVigiado:
+    """Proxy de `tkapp` que anota toda chamada feita fora da thread principal.
+
+    Vigiar `Variable.get` não basta: `BooleanVar` e `StringVar` definem o PRÓPRIO
+    `get`. Por isso a vigília fica no nível mais baixo, o objeto Tcl que todo
+    widget e toda variável usam. Anota ANTES de repassar, então o registro
+    existe mesmo que o código chamador engula o `RuntimeError` (o Tcl só o
+    levanta sem mainloop; com o mainloop a chamada passaria em silêncio).
+    """
+
+    def __init__(self, real, violacoes: list[str]) -> None:
+        self._real = real
+        self._violacoes = violacoes
+
+    def __getattr__(self, nome):
+        atributo = getattr(self._real, nome)
+        if not callable(atributo):
+            return atributo
+
+        def vigiado(*args, **kw):
+            if threading.current_thread() is not threading.main_thread():
+                self._violacoes.append(f"{nome}{args[:2]!r}")
+                # Não repassa: o Tcl real bloquearia ~1s esperando o mainloop
+                # e depois levantaria este mesmo erro.
+                raise RuntimeError("chamada ao Tk fora da thread principal")
+            return atributo(*args, **kw)
+
+        return vigiado
+
+
+def _vigiar_tk(app, monkeypatch) -> list[str]:
+    """Troca o `tk` da janela, de cada widget e de cada variável pelo proxy."""
+    violacoes: list[str] = []
+    proxy = _TkVigiado(app.tk, violacoes)
+    pendentes = [app]
+    while pendentes:
+        w = pendentes.pop()
+        monkeypatch.setattr(w, "tk", proxy)
+        pendentes.extend(w.winfo_children())
+    for v in vars(app).values():
+        if isinstance(v, tkinter.Variable):
+            monkeypatch.setattr(v, "_tk", proxy)
+    return violacoes
+
+
+def _rodar_na_thread(alvo, *args) -> BaseException | None:
+    """Roda `alvo` numa thread de verdade; devolve a exceção que a matou."""
+    erro: list[BaseException] = []
+
+    def corpo():
+        try:
+            alvo(*args)
+        except BaseException as exc:  # noqa: BLE001 - só para inspecionar
+            erro.append(exc)
+
+    t = threading.Thread(target=corpo, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert not t.is_alive()
+    return erro[0] if erro else None
+
+
+def _compress_falso(monkeypatch, recebidos: list):
     import gifc.app as app_mod
 
-    principal = threading.main_thread()
-    violacoes: list[str] = []
-    get_real = tkinter.Variable.get
-    set_real = tkinter.Variable.set
-
-    def get_vigiado(self):
-        if threading.current_thread() is not principal:
-            violacoes.append("get")
-        return get_real(self)
-
-    def set_vigiado(self, valor):
-        if threading.current_thread() is not principal:
-            violacoes.append("set")
-        return set_real(self, valor)
-
-    monkeypatch.setattr(tkinter.Variable, "get", get_vigiado)
-    monkeypatch.setattr(tkinter.Variable, "set", set_vigiado)
-
-    recebidos: list[dict] = []
-
-    def compress_falso(src, alvo, toggles, tools, **kw):
+    def falso(src, alvo, toggles, tools, **kw):
         recebidos.append(kw)
         return _resultado(src=src)
 
-    monkeypatch.setattr(app_mod, "compress_file", compress_falso)
+    monkeypatch.setattr(app_mod, "compress_file", falso)
+
+
+def test_worker_repassa_a_conversao_sem_tocar_em_nenhum_widget(
+    app, monkeypatch, tmp_path
+):
+    """`_trabalhar` roda numa thread real. Qualquer chamada ao Tcl que parta
+    dela (ler `tg_webp`, `alvo_mb`, mexer em `status`, `log`, `barra`...) é
+    registrada pelo vigia, e o teste exige zero."""
+    violacoes = _vigiar_tk(app, monkeypatch)
+    recebidos: list[dict] = []
+    _compress_falso(monkeypatch, recebidos)
     monkeypatch.setattr(app, "tools", object())
 
     arquivos = _criar(tmp_path, "a.png", "b.jpg")
-    t = threading.Thread(
-        target=app._trabalhar, args=(arquivos, MB, Toggles(), True), daemon=True
-    )
-    t.start()
-    t.join(timeout=5)
+    erro = _rodar_na_thread(app._trabalhar, arquivos, MB, Toggles(), True)
 
-    assert not t.is_alive()
+    assert erro is None
     assert violacoes == []
     assert [kw["converter_webp"] for kw in recebidos] == [True, True]
     tipos = []
@@ -713,6 +774,93 @@ def test_worker_repassa_a_conversao_e_nunca_le_variavel_tk(app, monkeypatch, tmp
         tipos.append(app.fila.get_nowait()[0])
     assert tipos.count("resultado") == 2
     assert tipos[-1] == "fim"
+
+
+def test_o_vigia_enxerga_a_thread_principal_sem_falso_alarme(app, monkeypatch):
+    """Sem este controle, um vigia quebrado que nunca anota nada faria todos
+    os outros testes passarem. Aqui a thread principal mexe em tudo."""
+    violacoes = _vigiar_tk(app, monkeypatch)
+    app.tg_webp.get()
+    app.status.config(text="ok")
+    app._log("x")
+    assert violacoes == []
+
+
+def _worker_que_le(var):
+    def worker(self, arquivos, alvo, toggles, converter_webp):
+        getattr(self, var).get()
+    return worker
+
+
+def _worker_que_escreve_variavel(self, arquivos, alvo, toggles, converter_webp):
+    self.tg_webp.set(True)
+
+
+def _worker_que_configura_widget(self, arquivos, alvo, toggles, converter_webp):
+    self.status.config(text="mexi")
+
+
+def _worker_que_insere_no_log(self, arquivos, alvo, toggles, converter_webp):
+    self.log.insert("", "end", text="mexi")
+
+
+def _worker_que_engole_runtimeerror(self, arquivos, alvo, toggles, converter_webp):
+    """O Tcl só levanta `RuntimeError` sem mainloop. Com mainloop a chamada
+    passa em silêncio; engolir o erro simula esse caso, em que só o vigia vê."""
+    try:
+        self.tg_webp.get()
+        self.status.config(text="mexi")
+    except RuntimeError:
+        pass
+
+
+@pytest.mark.parametrize(
+    "worker",
+    [
+        _worker_que_le("tg_webp"),
+        _worker_que_le("alvo_mb"),
+        _worker_que_escreve_variavel,
+        _worker_que_configura_widget,
+        _worker_que_insere_no_log,
+        _worker_que_engole_runtimeerror,
+    ],
+    ids=[
+        "le-BooleanVar", "le-StringVar", "escreve-variavel", "config-de-widget",
+        "insere-no-Treeview", "engole-RuntimeError",
+    ],
+)
+def test_o_vigia_pega_um_worker_que_toca_o_tk(app, monkeypatch, worker):
+    """Prova do vigia: workers deliberadamente errados TÊM de ser pegos,
+    inclusive os que leem `BooleanVar`/`StringVar` (que têm `get` próprio, e
+    escapavam de um patch em `Variable.get`) e os que engolem o RuntimeError."""
+    violacoes = _vigiar_tk(app, monkeypatch)
+    _rodar_na_thread(worker, app, [], MB, Toggles(), False)
+    assert violacoes, "o vigia não viu o acesso ao Tk fora da thread principal"
+
+
+@pytest.mark.parametrize("mutacao", ["le_variavel", "config_de_widget"])
+def test_o__trabalhar_real_quebrado_e_pego_pelo_vigia(app, monkeypatch, tmp_path, mutacao):
+    """Mutação do código de produção: o `_trabalhar` real, com uma linha
+    proibida injetada, tem de reprovar no mesmo teste que guarda o original."""
+    original = type(app)._trabalhar
+
+    def quebrado(self, arquivos, alvo, toggles, converter_webp):
+        try:
+            if mutacao == "le_variavel":
+                converter_webp = self.tg_webp.get()
+            else:
+                self.status.config(text="mexi")
+        except RuntimeError:
+            pass
+        original(self, arquivos, alvo, toggles, converter_webp)
+
+    violacoes = _vigiar_tk(app, monkeypatch)
+    _compress_falso(monkeypatch, [])
+    monkeypatch.setattr(app, "tools", object())
+    _rodar_na_thread(
+        quebrado, app, _criar(tmp_path, "a.png"), MB, Toggles(), False
+    )
+    assert violacoes
 
 
 # ---------- texto do resultado ----------
@@ -802,29 +950,87 @@ def test_resultado_convertido_nomeia_os_dois_formatos(entrada, rotulo):
     assert "foto_comprimido.webp" in texto
 
 
-def test_original_mantido_nao_promete_webp():
-    """Pediu-se WebP, mas o original foi copiado: o texto descreve o que está
-    no disco (`formato_saida`), não o que a caixa pedia."""
-    r = _resultado(
-        dst=Path("foto_comprimido.png"), params=None, already_optimized=True,
-        final_bytes=4 * MB, formato_entrada=Formato.PNG, formato_saida=Formato.PNG,
+def _mantido(entrada: Formato = Formato.PNG, **kw) -> CompressResult:
+    ext = {Formato.PNG: "png", Formato.JPEG: "jpg", Formato.GIF: "gif",
+           Formato.WEBP: "webp"}[entrada]
+    base = dict(
+        src=Path(f"a.{ext}"), dst=Path(f"a_comprimido.{ext}"), params=None,
+        already_optimized=True, final_bytes=4 * MB,
+        formato_entrada=entrada, formato_saida=entrada,
     )
-    texto = _texto_resultado(r)
+    base.update(kw)
+    return _resultado(**base)
+
+
+def test_original_mantido_sem_conversao_diz_que_ja_estava_otimizado():
+    texto = _texto_resultado(_mantido(), converteu_webp=False)
+    assert "já estava otimizado" in texto
     assert "WebP" not in texto and "webp" not in texto
-    assert "PNG" in texto
-    assert "foto_comprimido.png" in texto
+    assert "a_comprimido.png" in texto
+
+
+@pytest.mark.parametrize("entrada", [Formato.PNG, Formato.JPEG])
+def test_original_mantido_com_conversao_explica_que_o_webp_nao_ajudou(entrada):
+    """Com a caixa ligada o arquivo nunca percorreu a escada do próprio
+    formato: "já estava otimizado" seria mentira sobre ela. O texto explica
+    por que o original ficou, sem prometer um `.webp` que não existe."""
+    r = _mantido(entrada)
+    texto = _texto_resultado(r, converteu_webp=True)
+    rotulo = "PNG" if entrada is Formato.PNG else "JPEG"
+    assert "nenhum degrau de WebP ficou menor" in texto
+    assert f"a escada de {rotulo} não foi tentada" in texto
+    assert "já estava otimizado" not in texto
+    assert r.dst.name in texto and ".webp" not in texto
     assert "sem perda" not in texto
+
+
+@pytest.mark.parametrize("entrada", [Formato.GIF, Formato.WEBP])
+def test_original_mantido_de_gif_ou_webp_nunca_cita_a_conversao(entrada):
+    """A caixa vale para o LOTE; só PNG/JPEG podem ter tentado converter. Um
+    GIF (que nunca converte) ou um WebP num lote com a caixa ligada mantém o
+    texto de sempre."""
+    texto = _texto_resultado(_mantido(entrada), converteu_webp=True)
+    assert "já estava otimizado" in texto
+    assert "nenhum degrau de WebP" not in texto
+
+
+def test_com_conversao_que_funcionou_o_texto_nao_explica_nada():
+    r = _resultado(
+        dst=Path("foto_comprimido.webp"), params=webp.TABELA[3],
+        formato_saida=Formato.WEBP,
+    )
+    texto = _texto_resultado(r, converteu_webp=True)
+    assert "nenhum degrau" not in texto and "não foi tentada" not in texto
+    assert "PNG → WebP" in texto
+
+
+def test_log_resultado_usa_a_flag_do_lote_gravada_em_processar(app):
+    """`_log_resultado` não recebe a caixa: lê o que `_processar` gravou."""
+    app._lote_converteu = True
+    app._log_resultado(_mantido())
+    app._lote_converteu = False
+    app._log_resultado(_mantido())
+    textos = [app.log.item(i, "text") for i in app.log.get_children()]
+    assert "nenhum degrau de WebP ficou menor" in textos[0]
+    assert "já estava otimizado" in textos[1]
+
+
+def test_processar_grava_a_flag_do_lote(app, _lote_falso):
+    soltar, esperar, _, _ = _lote_falso
+    app.tg_webp.set(True)
+    soltar("a.png")
+    esperar()
+    assert app._lote_converteu is True
+    soltar("b.gif")
+    esperar()
+    assert app._lote_converteu is False, "caixa marcada mas inútil para só GIF"
 
 
 def test_original_mantido_de_jpeg_nao_diz_sem_perda():
-    r = _resultado(
-        src=Path("a.jpg"), dst=Path("a_comprimido.jpg"), params=None,
-        already_optimized=True, final_bytes=4 * MB,
-        formato_entrada=Formato.JPEG, formato_saida=Formato.JPEG,
-    )
-    texto = _texto_resultado(r)
-    assert "JPEG" in texto
-    assert "sem perda" not in texto
+    for conv in (False, True):
+        texto = _texto_resultado(_mantido(Formato.JPEG), converteu_webp=conv)
+        assert "JPEG" in texto
+        assert "sem perda" not in texto
 
 
 def test_texto_traz_tamanhos_e_reducao():
@@ -952,7 +1158,7 @@ def test_texto_descreve_o_arquivo_escrito_e_nao_o_pedido(
         converter_webp=True,
     )
 
-    texto = _texto_resultado(r)
+    texto = _texto_resultado(r, converteu_webp=True)
     assert r.dst.is_file()
     assert r.dst.name in texto
     if converteu:
@@ -960,5 +1166,6 @@ def test_texto_descreve_o_arquivo_escrito_e_nao_o_pedido(
         assert "PNG → WebP" in texto
     else:
         assert r.dst.suffix == ".png"
-        assert "webp" not in texto.lower()
-        assert "otimizado" in texto and "cópia mantida" in texto
+        assert ".webp" not in texto
+        assert "nenhum degrau de WebP ficou menor" in texto
+        assert "cópia mantida (PNG)" in texto
