@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-from dataclasses import dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,16 @@ from gifc import formatos
 from gifc.formatos.base import EncodeError
 from gifc.ladder import Toggles, aplicar_toggles
 from gifc.probe import Formato, probe
-from gifc.search import FALHOU, Attempt, CancelFn, ProgressFn, RungFailed, find_best
+from gifc.search import (
+    FALHOU,
+    Attempt,
+    Cancelled,
+    CancelFn,
+    ProgressFn,
+    RungFailed,
+    SearchResult,
+    find_best,
+)
 from gifc.tools import Tools
 
 SUFIXO = "_comprimido"
@@ -73,6 +83,87 @@ def _try_path(tmpdir: Path, index: int, formato: Formato) -> Path:
     return tmpdir / f"try_{index}{formatos.extensao(formato)}"
 
 
+def _sondar(
+    index: int, params: Any, encode_fn: Callable[[int, Any], int]
+) -> Attempt[Any]:
+    """Uma codificação, com `RungFailed` virando um `Attempt` de tamanho
+    `FALHOU`: o mesmo tratamento que `find_best` dá a cada sonda sua."""
+    try:
+        return Attempt(index, params, encode_fn(index, params))
+    except RungFailed as exc:
+        return Attempt(index, params, FALHOU, exc.mensagem)
+
+
+def buscar(
+    escada: Sequence[Any],
+    n_prefixo: int,
+    alvo: int,
+    encode_fn: Callable[[int, Any], int],
+    on_progress: ProgressFn | None = None,
+    should_cancel: CancelFn | None = None,
+) -> SearchResult[Any]:
+    """O degrau de MAIOR qualidade de `escada` que cabe em `alvo`.
+
+    `find_best` bisecta, e a bisecção só é correta numa curva de tamanho
+    monótona. Os `n_prefixo` primeiros degraus (os sem perda, ver
+    `SEM_PERDA` em `gifc.formatos.base`) quebram essa monotonia, então são
+    codificados um a um, em ordem, FORA da bisecção; só a cauda é bisectada.
+    Vence o menor índice entre todos os que cabem, do prefixo e da cauda.
+
+    Um degrau do prefixo que cabe encerra a busca: ele tem índice menor que
+    qualquer coisa da cauda, e é o que o critério escolheria de qualquer
+    forma. O pior caso (nada cabe) custa o prefixo inteiro mais a bisecção.
+
+    Índices e total em `Attempt`/`on_progress` são os da escada inteira.
+    Se nada cabe, devolve o menor tamanho medido, com `hit_target=False`.
+    """
+    if not escada:
+        raise ValueError("A escada de qualidade está vazia.")
+    total = len(escada)
+    tentativas: list[Attempt[Any]] = []
+
+    def registrar(tentativa: Attempt[Any]) -> None:
+        tentativas.append(tentativa)
+        if on_progress is not None:
+            on_progress(tentativa, total)
+
+    cabe_no_prefixo = False
+    for i in range(n_prefixo):
+        if should_cancel is not None and should_cancel():
+            raise Cancelled()
+        tentativa = _sondar(i, escada[i], encode_fn)
+        registrar(tentativa)
+        if tentativa.size_bytes <= alvo:
+            cabe_no_prefixo = True
+            break
+
+    if not cabe_no_prefixo and n_prefixo < total:
+        # `find_best` enxerga só a cauda, com índices locais; deslocar de
+        # volta para os da escada inteira, aqui e no `encode_fn`.
+        find_best(
+            escada[n_prefixo:], alvo,
+            lambda i, params: encode_fn(i + n_prefixo, params),
+            on_progress=lambda a, _total: registrar(
+                replace(a, index=a.index + n_prefixo)
+            ),
+            should_cancel=should_cancel,
+        )
+
+    cabem = [t for t in tentativas if t.size_bytes <= alvo]
+    if cabem:
+        escolhido = min(cabem, key=lambda t: t.index)
+    else:
+        # `min` fica com o primeiro dos empatados: o primeiro medido.
+        escolhido = min(tentativas, key=lambda t: t.size_bytes)
+    return SearchResult(
+        index=escolhido.index,
+        params=escolhido.params,
+        size_bytes=escolhido.size_bytes,
+        hit_target=bool(cabem),
+        attempts=tentativas,
+    )
+
+
 def compress_file(
     src: Path,
     target_bytes: int,
@@ -96,6 +187,14 @@ def compress_file(
     modulo = formatos.para(saida)
     toggles = formatos.toggles_efetivos(saida, toggles, tools)
     escada = aplicar_toggles(modulo.TABELA, info, toggles, modulo.NEUTROS)
+    # O prefixo sem perda, depois dos toggles: dedupe mantém o primeiro de
+    # cada grupo e o prefixo é o começo da tabela, então o dele é o começo da
+    # escada. Aplicar os toggles só a ele dá o tamanho certo.
+    n_prefixo = len(
+        aplicar_toggles(
+            modulo.TABELA[: len(modulo.SEM_PERDA)], info, toggles, modulo.NEUTROS
+        )
+    )
     # Um alvo >= à entrada não é restrição: pede-se "menor", não "qualquer
     # coisa abaixo de 10 MB". Sem este limite um degrau de alta qualidade
     # MAIOR que a entrada (o sem perda do WebP numa foto) caberia no alvo,
@@ -125,8 +224,8 @@ def compress_file(
             assert ultimo_erro is not None  # o loop rodou 2x e sempre falhou
             raise RungFailed(str(ultimo_erro))
 
-        resultado = find_best(
-            escada, alvo_da_busca, encode_fn,
+        resultado = buscar(
+            escada, n_prefixo, alvo_da_busca, encode_fn,
             on_progress=on_progress, should_cancel=should_cancel,
         )
 

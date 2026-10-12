@@ -66,6 +66,10 @@ SENTIDOS: dict[str, str] = {
     "scale_pct": "menor",
 }
 
+# Todo degrau do JPEG recodifica com perda, e a curva de tamanho é monótona por
+# toda a escada.
+SEM_PERDA: tuple[int, ...] = ()
+
 # O valor MENOS agressivo de cada coluna controlada por toggle. A qualidade
 # e a subamostragem não têm toggle (o JPEG só tem o da escala).
 NEUTROS: dict[str, object] = {

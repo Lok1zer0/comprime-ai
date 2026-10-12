@@ -64,6 +64,12 @@ SENTIDOS: dict[str, str] = {
     "scale_pct": "menor",
 }
 
+# O degrau 0 (sem perda) NÃO entra na bisecção: em arte chapada ele é dezenas
+# de vezes MENOR que o q90 logo abaixo (medido: 4.218 B contra 280.798 B), e
+# a bisecção, ao ver a sonda do meio estourar o alvo, descartaria o degrau 0
+# sem medi-lo.
+SEM_PERDA: tuple[int, ...] = (0,)
+
 # O valor MENOS agressivo de cada coluna controlada por toggle. A qualidade
 # não tem toggle (o WebP só tem o da escala).
 NEUTROS: dict[str, object] = {

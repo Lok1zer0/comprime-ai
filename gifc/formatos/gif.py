@@ -62,6 +62,10 @@ SENTIDOS: dict[str, str] = {
     "fps": "menor",
 }
 
+# Nenhum degrau do GIF é sem perda: até o 0 repaletiza pelo ffmpeg. A curva
+# de tamanho é monótona por toda a escada (medido em `tests/test_formato_gif.py`).
+SEM_PERDA: tuple[int, ...] = ()
+
 # O valor MENOS agressivo de cada coluna: o que ela assume quando o usuário
 # desliga a alavanca correspondente.
 NEUTROS: dict[str, object] = {

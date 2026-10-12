@@ -57,6 +57,11 @@ SENTIDOS: dict[str, str] = {
     "scale_pct": "menor",
 }
 
+# Os degraus 0 e 1 são sem perda e NÃO entram na bisecção: numa imagem suave
+# a recompressão pode ser menor que a versão quantizada, de modo que o tamanho
+# sobe antes de descer e a bisecção descartaria o degrau 0 sem medi-lo.
+SEM_PERDA: tuple[int, ...] = (0, 1)
+
 # O valor MENOS agressivo de cada coluna controlada por toggle. As cores são
 # `None` (não quantizar), NÃO 256: desligar a paleta tem de deixar o arquivo
 # como está, e quantizar uma imagem muito suave e previsível a 256 cores a

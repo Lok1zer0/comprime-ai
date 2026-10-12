@@ -49,6 +49,14 @@ class ModuloFormato(Protocol):
       BAIXO é (ex.: `colors`, `scale_pct`, `fps`). `None` conta como o
       maior valor possível ("sem limite"/original). O teste de invariante
       de monotonicidade lê este mapa e exige que ele cubra TODOS os campos.
+    - `SEM_PERDA`: os índices da TABELA cujo tamanho NÃO é comparável ao dos
+      demais — na prática os degraus sem perda. É sempre um prefixo
+      (`(0,)`, `(0, 1)`, ou `()` quando não há nenhum). A bisecção só é
+      correta numa curva de tamanho monótona, e um degrau sem perda quebra
+      a monotonia: em arte chapada ele é muito MENOR que os com perda logo
+      abaixo (ver `gifc.compress`). Por isso o prefixo é codificado à parte
+      e só o resto da escada é bisectado. O teste de meta em
+      `tests/test_ladder.py` falha se o campo faltar ou for incoerente.
     - `NEUTROS`: para cada coluna controlada por um toggle (ver
       `ladder.ALAVANCAS`), o valor MENOS agressivo dela — o que ela assume
       com a alavanca desligada. É por formato porque não é universal: 256
@@ -63,6 +71,7 @@ class ModuloFormato(Protocol):
     Params: type
     TABELA: tuple[Any, ...]
     SENTIDOS: dict[str, str]
+    SEM_PERDA: tuple[int, ...]
     NEUTROS: dict[str, object]
 
     def codificar(

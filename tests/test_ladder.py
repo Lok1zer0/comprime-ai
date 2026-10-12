@@ -460,3 +460,129 @@ def test_de_none_para_numero_e_o_caminho_normal_do_fps():
     base = dict(colors=64, lossy=100, scale_pct=70)
     tabela = (gif.Params(**base, fps=None), gif.Params(**base, fps=12.0))
     verificar_monotonicidade(_falso(TABELA=tabela), "teste")
+
+
+# ---------- SEM_PERDA: o prefixo que a bisecção não pode atravessar ----------
+#
+# A bisecção só é correta numa curva de tamanho monótona, e um degrau sem
+# perda a quebra (em arte chapada ele é MUITO menor que os com perda logo
+# abaixo). Cada formato declara esse prefixo em `SEM_PERDA`; a verificação
+# abaixo é o equivalente, para ele, do que `verificar_neutros` é para o
+# `NEUTROS`: um formato que esquece o campo, ou o declara incoerente, falha.
+
+
+def verificar_sem_perda(modulo: Any, rotulo: str) -> None:
+    """`SEM_PERDA` existe, é um prefixo da TABELA e deixa uma cauda.
+
+    - Ausente: falha. Sem o campo o `compress_file` bisectaria a escada
+      inteira e o defeito voltaria em silêncio para o próximo formato.
+    - Índice fora da TABELA: falha.
+    - Que não seja exatamente `(0, 1, ..., n-1)`: falha. O `compress_file`
+      só sabe tratar um PREFIXO.
+    - Sem nenhum degrau sobrando para a cauda: falha.
+    - Um degrau declarado que um toggle altera: falha. Um degrau sem perda
+      já está no valor neutro de toda coluna; se um toggle o muda, a escada
+      efetiva deixa de ter o prefixo onde `compress_file` o procura.
+    """
+    assert hasattr(modulo, "SEM_PERDA"), (
+        f"[{rotulo}] o formato não declara SEM_PERDA (use () se não houver "
+        f"degrau sem perda)"
+    )
+    sem_perda = modulo.SEM_PERDA
+    assert isinstance(sem_perda, tuple) and all(
+        type(i) is int for i in sem_perda
+    ), f"[{rotulo}] SEM_PERDA deve ser uma tupla de índices inteiros: {sem_perda!r}"
+
+    n = len(modulo.TABELA)
+    fora = [i for i in sem_perda if not 0 <= i < n]
+    assert not fora, (
+        f"[{rotulo}] SEM_PERDA tem índice(s) fora da TABELA (0..{n - 1}): {fora}"
+    )
+    assert sem_perda == tuple(range(len(sem_perda))), (
+        f"[{rotulo}] SEM_PERDA deve ser um prefixo (0, 1, ...), não {sem_perda}"
+    )
+    assert len(sem_perda) < n, (
+        f"[{rotulo}] SEM_PERDA cobre a escada inteira: não sobra cauda para bisectar"
+    )
+
+    todos_desligados = Toggles(False, False, False, False)
+    prefixo = list(modulo.TABELA[: len(sem_perda)])
+    efetivo = aplicar_toggles(
+        prefixo, info(fps=1_000.0), todos_desligados, modulo.NEUTROS
+    )
+    assert efetivo == prefixo, (
+        f"[{rotulo}] um toggle altera um degrau declarado em SEM_PERDA: "
+        f"{prefixo} -> {efetivo}"
+    )
+
+
+@pytest.mark.parametrize("formato", sorted(formatos.registrados()))
+def test_sem_perda_por_formato(formato):
+    verificar_sem_perda(formatos.para(formato), formato.name)
+
+
+@pytest.mark.parametrize(
+    "formato, esperado",
+    [
+        (Formato.GIF, ()),
+        (Formato.JPEG, ()),
+        (Formato.PNG, (0, 1)),
+        (Formato.WEBP, (0,)),
+    ],
+)
+def test_sem_perda_de_cada_formato_e_o_documentado(formato, esperado):
+    assert formatos.para(formato).SEM_PERDA == esperado
+
+
+def test_o_verificador_de_sem_perda_aceita_o_gif_real():
+    verificar_sem_perda(_falso(SEM_PERDA=()), "controle")
+
+
+def test_formato_que_omite_sem_perda_falha():
+    with pytest.raises(AssertionError, match="não declara SEM_PERDA"):
+        verificar_sem_perda(_falso(), "teste")   # `_falso` não traz o campo
+
+
+@pytest.mark.parametrize("formato", sorted(formatos.registrados()))
+def test_modulo_real_sem_o_campo_falha(formato):
+    """O mesmo, sobre cada módulo real com o campo removido."""
+    real = formatos.para(formato)
+    sem_o_campo = SimpleNamespace(
+        **{k: getattr(real, k) for k in ("Params", "TABELA", "SENTIDOS", "NEUTROS")}
+    )
+    with pytest.raises(AssertionError, match="não declara SEM_PERDA"):
+        verificar_sem_perda(sem_o_campo, formato.name)
+
+
+@pytest.mark.parametrize(
+    "sem_perda",
+    [(len(gif.TABELA),), (0, 99), (-1,), (0, len(gif.TABELA))],
+)
+def test_indice_fora_da_tabela_falha(sem_perda):
+    with pytest.raises(AssertionError, match="fora da TABELA"):
+        verificar_sem_perda(_falso(SEM_PERDA=sem_perda), "teste")
+
+
+@pytest.mark.parametrize("sem_perda", [(1,), (0, 2), (1, 0), (0, 0)])
+def test_sem_perda_que_nao_e_prefixo_falha(sem_perda):
+    with pytest.raises(AssertionError, match="prefixo"):
+        verificar_sem_perda(_falso(SEM_PERDA=sem_perda), "teste")
+
+
+def test_sem_perda_que_cobre_a_escada_inteira_falha():
+    todos = tuple(range(len(gif.TABELA)))
+    with pytest.raises(AssertionError, match="cauda"):
+        verificar_sem_perda(_falso(SEM_PERDA=todos), "teste")
+
+
+@pytest.mark.parametrize("sem_perda", [[0], {0}, 0, "0"])
+def test_sem_perda_que_nao_e_tupla_de_inteiros_falha(sem_perda):
+    with pytest.raises(AssertionError, match="tupla"):
+        verificar_sem_perda(_falso(SEM_PERDA=sem_perda), "teste")
+
+
+def test_degrau_sem_perda_que_um_toggle_altera_falha():
+    """O degrau 1 do GIF tem lossy=20: um toggle o leva a 0. Declará-lo
+    sem perda é incoerente, e a verificação enxerga."""
+    with pytest.raises(AssertionError, match="toggle altera"):
+        verificar_sem_perda(_falso(SEM_PERDA=(0, 1)), "teste")

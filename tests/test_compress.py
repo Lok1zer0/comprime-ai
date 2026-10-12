@@ -746,3 +746,256 @@ def test_webp_com_alvo_folgado_e_sem_conversao_reduz_de_verdade(tmp_path):
     assert r.hit_target is True
     assert r.final_bytes < original * 0.8, (r.final_bytes, original)
     assert r.params != formato_webp.TABELA[0]
+
+
+# --- a escada não é monótona onde há degraus sem perda ---------------------
+#
+# A bisecção de `find_best` só é correta numa curva de tamanho monótona, e
+# ela NÃO é monótona onde a escada tem degraus sem perda: em arte chapada o
+# degrau sem perda é muito MENOR que os com perda logo abaixo dele. O
+# `compress_file` por isso codifica o prefixo `SEM_PERDA` fora da bisecção e
+# só bisecta o resto.
+
+from gifc.formatos import png as formato_png  # noqa: E402
+
+COM_OXIPNG = Tools("ffmpeg", "ffprobe", None, oxipng="oxipng")
+
+
+def _curva_falsa(monkeypatch, modulo, tamanhos: list[int]) -> list[int]:
+    """Troca o `codificar` de `modulo` por um que grava `tamanhos[degrau]`
+    bytes, onde `degrau` é o índice do `Params` na TABELA. Devolve a lista
+    (preenchida na ordem) dos degraus codificados."""
+    assert len(tamanhos) == len(modulo.TABELA)
+    codificados: list[int] = []
+
+    def falso(s, d, params, i, t):
+        degrau = modulo.TABELA.index(params)
+        codificados.append(degrau)
+        d.write_bytes(b"w" * tamanhos[degrau])
+        return tamanhos[degrau]
+
+    monkeypatch.setattr(modulo, "codificar", falso)
+    return codificados
+
+
+# Arte chapada em WebP: o degrau 0 (sem perda) é o MENOR, e os com perda logo
+# abaixo dele são muito maiores, só voltando a baixar mais adiante. É o
+# formato da curva medida numa captura de tela; os valores são sintéticos.
+WEBP_CHAPADO = [100, 9_000, 8_000, 7_000, 6_000, 5_500, 5_200, 4_000, 3_500, 3_000, 2_000]
+
+
+def test_webp_degrau_sem_perda_menor_que_os_com_perda_e_escolhido(
+    tmp_path, monkeypatch
+):
+    """O defeito: a primeira sonda (degrau 5, 5.500 B) estoura o alvo, a
+    bisecção descartava tudo à esquerda e o degrau 0 (100 B, sem perda e
+    resolução cheia) nunca era medido."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    codificados = _curva_falsa(monkeypatch, formato_webp, WEBP_CHAPADO)
+    alvo = 4_000
+    assert alvo < info.size_bytes - 1   # fora do regime de alvo folgado
+
+    r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert r.params == formato_webp.TABELA[0]
+    assert r.final_bytes == 100 and r.hit_target is True
+    assert r.already_optimized is False
+    assert codificados == [0]   # coube: nada mais precisa ser medido
+
+
+def test_prefixo_nao_cabendo_a_cauda_ainda_e_bisectada(tmp_path, monkeypatch):
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    # o sem perda (4.500) não cabe nos 4.000; da cauda cabem os degraus 7 em diante
+    tamanhos = [4_500, 9_000, 8_000, 7_000, 6_000, 5_500, 5_200, 4_000, 3_500, 3_000, 2_000]
+    codificados = _curva_falsa(monkeypatch, formato_webp, tamanhos)
+
+    r = mod.compress_file(src, 4_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert codificados[0] == 0   # o prefixo vem antes da cauda
+    assert r.params == formato_webp.TABELA[7]
+    assert r.hit_target is True
+    assert len(codificados) == len(set(codificados))
+
+
+def test_o_menor_indice_entre_prefixo_e_cauda_vence(tmp_path, monkeypatch):
+    """PNG, dois degraus sem perda: o 0 não cabe, o 1 cabe. O 1 vence, e a
+    cauda (cujos degraus caberiam, e são menores) nem chega a ser medida."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    tamanhos = [4_900, 3_900, 3_800, 3_000, 2_500, 2_000, 1_500, 1_200, 1_000, 900]
+    codificados = _curva_falsa(monkeypatch, formato_png, tamanhos)
+
+    r = mod.compress_file(src, 4_000, TODOS, COM_OXIPNG)
+
+    assert r.params == formato_png.TABELA[1]
+    assert r.final_bytes == 3_900
+    assert codificados == [0, 1]
+
+
+def test_primeiro_degrau_do_prefixo_que_cabe_dispensa_o_resto(tmp_path, monkeypatch):
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    tamanhos = [3_900, 3_000, 3_800, 3_000, 2_500, 2_000, 1_500, 1_200, 1_000, 900]
+    codificados = _curva_falsa(monkeypatch, formato_png, tamanhos)
+
+    r = mod.compress_file(src, 4_000, TODOS, COM_OXIPNG)
+
+    assert r.params == formato_png.TABELA[0]
+    assert codificados == [0]
+
+
+def test_png_tem_inversoes_na_curva_e_o_prefixo_as_cobre(tmp_path, monkeypatch):
+    """A forma da curva medida num degradê com oxipng: 4.550, 5.068, 2.641,
+    3.323, 2.259. Com o alvo em 3.000 B o degrau 3 (128 cores) cabe e é o de
+    maior qualidade; a bisecção sobre a escada inteira devolvia o 5."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    src.write_bytes(b"x" * 20_000)
+    monkeypatch.setattr(mod, "probe", lambda p: ImagemInfo(
+        path=src, formato=Formato.PNG, width=1280, height=800, fps=10.0,
+        frame_count=1, duration=0.0, size_bytes=20_000,
+    ))
+    # os degraus 0 e 1 não cabem; o 2 (5.068) é uma inversão DENTRO da cauda
+    tamanhos = [4_550, 4_550, 5_068, 2_641, 3_323, 2_259, 2_000, 1_900, 1_800, 1_700]
+    _curva_falsa(monkeypatch, formato_png, tamanhos)
+
+    r = mod.compress_file(src, 3_000, TODOS, COM_OXIPNG)
+
+    assert r.params == formato_png.TABELA[3]
+
+
+def test_degrau_do_prefixo_que_falha_nao_derruba_a_busca(tmp_path, monkeypatch):
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    chamadas: dict[int, int] = {}
+
+    def falso(s, d, params, i, t):
+        degrau = formato_webp.TABELA.index(params)
+        chamadas[degrau] = chamadas.get(degrau, 0) + 1
+        if degrau == 0:
+            raise EncodeError("o sem perda quebrou")
+        d.write_bytes(b"w" * WEBP_CHAPADO[degrau])
+        return WEBP_CHAPADO[degrau]
+
+    monkeypatch.setattr(formato_webp, "codificar", falso)
+
+    r = mod.compress_file(src, 4_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert chamadas[0] == 2          # a falha transitória ainda ganha a segunda chance
+    assert r.hit_target is True and r.final_bytes <= 4_000
+    zero = next(a for a in r.attempts if a.index == 0)
+    assert zero.erro == "o sem perda quebrou"
+
+
+def test_progresso_traz_indices_da_escada_inteira(tmp_path, monkeypatch):
+    """O log mostra `degrau i/total`: com o prefixo à parte os índices e o
+    total continuam sendo os da escada completa."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    tamanhos = [4_500, 9_000, 8_000, 7_000, 6_000, 5_500, 5_200, 4_000, 3_500, 3_000, 2_000]
+    _curva_falsa(monkeypatch, formato_webp, tamanhos)
+    vistos: list[tuple[int, int]] = []
+
+    r = mod.compress_file(
+        src, 4_000, TODOS, SEM_FERRAMENTAS, converter_webp=True,
+        on_progress=lambda a, total: vistos.append((a.index, total)),
+    )
+
+    assert vistos and {t for _, t in vistos} == {len(formato_webp.TABELA)}
+    assert [i for i, _ in vistos] == [a.index for a in r.attempts]
+    assert vistos[0][0] == 0
+    # cada índice reportado é o do Params daquela tentativa na tabela
+    assert all(formato_webp.TABELA[a.index] == a.params for a in r.attempts)
+
+
+def test_cancelamento_vale_no_prefixo(tmp_path, monkeypatch):
+    from gifc.search import Cancelled
+
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    codificados = _curva_falsa(monkeypatch, formato_webp, WEBP_CHAPADO)
+
+    with pytest.raises(Cancelled):
+        mod.compress_file(
+            src, 4_000, TODOS, SEM_FERRAMENTAS, converter_webp=True,
+            should_cancel=lambda: True,
+        )
+    assert codificados == []
+
+
+def test_escada_so_de_prefixo_nao_quebra(tmp_path, monkeypatch):
+    """PNG sem paleta e sem escala: sobram só os dois degraus sem perda, e a
+    cauda fica vazia. `find_best` recusa uma escada vazia."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    _curva_falsa(monkeypatch, formato_png, [4_900, 4_800] + [1_000] * 8)
+
+    r = mod.compress_file(
+        src, 4_000, Toggles(False, True, False, True), COM_OXIPNG,
+    )
+
+    assert r.hit_target is False
+    assert r.params == formato_png.TABELA[1]    # o menor que se mediu
+    assert r.already_optimized is False
+
+
+@pytest.mark.parametrize(
+    "entrada, modulo, ferramentas, conversao, esperado",
+    [
+        (Formato.PNG, formato_png, COM_OXIPNG, False, 2 + 4),         # cauda de 8
+        (Formato.JPEG, formato_webp, SEM_FERRAMENTAS, True, 1 + 4),   # cauda de 10
+    ],
+    ids=["png", "webp"],
+)
+def test_orcamento_de_encodes_no_pior_caso(
+    tmp_path, monkeypatch, entrada, modulo, ferramentas, conversao, esperado
+):
+    """Pior caso (nada cabe): o prefixo inteiro mais a bisecção da cauda."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, entrada)
+    codificados = _curva_falsa(monkeypatch, modulo, [4_900] * len(modulo.TABELA))
+
+    mod.compress_file(src, 100, TODOS, ferramentas, converter_webp=conversao)
+
+    assert len(codificados) == esperado, codificados
+
+
+def _captura_de_tela(largura: int = 1280, altura: int = 720) -> Image.Image:
+    """Arte chapada como uma captura de tela: fundo liso, texto sem
+    degradê e, embaixo, uma hachura de duas cores. É o tipo de imagem em que
+    o WebP sem perda é DEZENAS de vezes menor que o q90."""
+    img = Image.new("RGB", (largura, altura), (255, 255, 255))
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 0, largura, altura // 16), fill=(32, 33, 36))
+    d.rectangle((0, altura // 16, largura // 6, altura), fill=(243, 244, 246))
+    for i in range(altura // 30):
+        d.text((10, altura // 12 + i * 20), f"Item de menu numero {i}", fill=(60, 60, 60))
+    for y in range(altura * 2 // 3, altura - 4, 2):
+        d.line((largura // 5, y, largura - 20, y), fill=(0, 0, 0))
+    for x in range(largura // 2, largura - 20, 8):
+        d.line((x, altura * 2 // 3, x, altura - 4), fill=(200, 30, 30))
+    return img
+
+
+@pytest.mark.integration
+def test_captura_de_tela_png_para_webp_entrega_o_sem_perda(tmp_path):
+    """O defeito de ponta a ponta, com codificador de verdade: numa captura
+    de tela o degrau 5 do WebP (q70) é maior que o alvo, e a bisecção sobre a
+    escada inteira entregava um degrau com perda e escala reduzida. O sem
+    perda — pixel idêntico, resolução cheia, uma fração do tamanho — nunca
+    era medido."""
+    from PIL import ImageChops
+
+    src = tmp_path / "captura.png"
+    _captura_de_tela().save(src, "PNG", optimize=True)
+    original = src.stat().st_size
+    alvo = original * 3 // 4
+
+    # A premissa do teste: a sonda do meio da bisecção antiga estoura o alvo.
+    sonda = tmp_path / "sonda.webp"
+    assert formato_webp.codificar(
+        src, sonda, formato_webp.TABELA[5], None, SEM_FERRAMENTAS
+    ) > alvo
+    sonda.unlink()
+
+    r = compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+
+    assert r.params == formato_webp.TABELA[0]
+    assert r.formato_saida is Formato.WEBP and r.hit_target is True
+    assert r.final_bytes < original / 4
+    assert r.attempts[0].index == 0
+    with Image.open(src) as a, Image.open(r.dst) as b:
+        assert a.size == b.size
+        assert ImageChops.difference(a.convert("RGB"), b.convert("RGB")).getbbox() is None
