@@ -62,13 +62,18 @@ def find_best(
 ) -> SearchResult[P]:
     """Acha o degrau de MAIOR qualidade cujo resultado cabe no alvo.
 
-    A escada garante que cada degrau é fracamente mais agressivo que o
-    anterior em todas as dimensões, o que torna o tamanho codificado
-    monotonicamente não-crescente. Isto permite usar uma busca de lower
-    bound: ~log2(n) codificações em vez de n.
+    PRÉ-CONDIÇÃO: o tamanho codificado é monotonicamente não-crescente ao
+    longo de `ladder`. Só então vale a busca de lower bound, ~log2(n)
+    codificações em vez de n. Agressividade fracamente crescente em todas as
+    colunas NÃO basta para isso: onde há degrau sem perda a curva sobe antes
+    de descer (arte chapada: o sem perda é muito menor que o com perda logo
+    abaixo), e uma sonda que estoura o alvo faria a busca descartar o degrau
+    de menor índice sem medi-lo. Quem chama tira esse prefixo da escada e o
+    codifica à parte (`gifc.compress.buscar`, `SEM_PERDA` de cada formato).
 
-    O registro de `menor_absoluto` continua necessário para proteger contra
-    variações do encoder que possam produzir um arquivo localmente maior.
+    O registro de `menor_absoluto` não conserta isso: ele só impede que uma
+    tentativa MEDIDA piore o resultado, e o degrau melhor nunca foi medido.
+    Serve para o caso em que nada cabe no alvo.
 
     Se nenhum degrau couber, devolve o de menor tamanho encontrado, com
     `hit_target=False`.
