@@ -10,6 +10,7 @@ que o original.
 from __future__ import annotations
 
 import shutil
+import struct
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -162,6 +163,16 @@ _GIRA_90 = frozenset(range(5, 9))
 _TEXTO_COM_ORIENTACAO = frozenset({"Raw profile type exif", "XML:com.adobe.xmp"})
 
 
+def _exif_legivel(img: Image.Image) -> Image.Exif:
+    """O EXIF de `img`, ou um vazio se o chunk eXIf está corrompido: um PNG
+    assim abre e converte normalmente, e ler a orientação não pode ser o que o
+    derruba (o Pillow levanta `SyntaxError` ao interpretá-lo)."""
+    try:
+        return img.getexif()
+    except (SyntaxError, ValueError, OSError, struct.error):
+        return Image.Exif()
+
+
 def _metadados(aberta: Image.Image, transposta: bool) -> dict[str, object]:
     """O que o Pillow não carrega sozinho ao salvar uma cópia: DPI (pHYs) e
     chunks de texto (tEXt, zTXt, iTXt).
@@ -220,11 +231,15 @@ def codificar(
                 # silêncio.
                 perfil = aberta.info.get("icc_profile")
                 dpi = aberta.info.get("dpi")
-                orientacao = aberta.getexif().get(ORIENTACAO)
+                exif = _exif_legivel(aberta)
+                orientacao = exif.get(ORIENTACAO)
                 girou = orientacao in _GIRA_90
-                # Devolve uma cópia já girada e com a tag removida do EXIF.
-                img = ImageOps.exif_transpose(aberta)
-                exif = img.getexif()
+                if orientacao in _TRANSPOSTAS:
+                    # Devolve uma cópia já girada e com a tag removida do EXIF.
+                    img = ImageOps.exif_transpose(aberta)
+                    exif = img.getexif()
+                else:
+                    img = aberta
                 extras = _metadados(aberta, orientacao in _TRANSPOSTAS)
                 img = _para_rgb_ou_rgba(_para_8_bits(img))
                 largura_antes, altura_antes = img.size
@@ -256,6 +271,6 @@ def codificar(
     except EncodeError:
         dst.unlink(missing_ok=True)
         raise
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
         dst.unlink(missing_ok=True)
         raise EncodeError(f"Falha ao gerar o PNG: {exc}") from exc

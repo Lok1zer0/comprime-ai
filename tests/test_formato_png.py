@@ -660,3 +660,38 @@ def test_sem_oxipng_os_degraus_zero_e_um_geram_o_mesmo_arquivo(tmp_path):
         codificar(src, dst, TABELA[i], probe(src), SEM_OXIPNG)
         saidas.append(dst.read_bytes())
     assert saidas[0] == saidas[1] == src.read_bytes()
+
+
+def _com_exif_ilegivel(origem: Path, destino: Path) -> Path:
+    """`origem` com um chunk eXIf cujo conteúdo não é TIFF."""
+    import struct
+    import zlib
+
+    dados = origem.read_bytes()
+    corpo = b"isto-nao-e-um-tiff"
+    chunk = (
+        struct.pack(">I", len(corpo)) + b"eXIf" + corpo
+        + struct.pack(">I", zlib.crc32(b"eXIf" + corpo) & 0xFFFFFFFF)
+    )
+    depois_do_ihdr = 8 + 4 + 4 + 13 + 4
+    destino.write_bytes(dados[:depois_do_ihdr] + chunk + dados[depois_do_ihdr:])
+    return destino
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("indice", [0, 2, 9])
+def test_exif_ilegivel_nao_derruba_o_degrau(tmp_path, indice):
+    """Um PNG com eXIf corrompido foi aberto e convertido sem problema antes de
+    o EXIF ser lido; ler a orientação não pode transformar isso num erro cru
+    (SyntaxError) que escapa da busca e mata o arquivo inteiro."""
+    base = _png_de_interface(tmp_path / "ui.png")
+    src = _com_exif_ilegivel(base, tmp_path / "ruim.png")
+    dst = tmp_path / "saida.png"
+
+    codificar(src, dst, TABELA[indice], probe(src), SEM_OXIPNG)
+
+    with Image.open(dst) as s:
+        s.load()
+        assert s.format == "PNG"
+        if indice != 0:      # o degrau 0 copia o arquivo, chunk ruim incluído
+            assert len(s.getexif()) == 0
