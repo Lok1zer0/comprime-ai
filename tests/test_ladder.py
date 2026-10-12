@@ -587,3 +587,36 @@ def test_degrau_sem_perda_que_um_toggle_altera_falha():
     with pytest.raises(AssertionError, match="toggle altera"):
         verificar_sem_perda(_falso(SEM_PERDA=(0, 1)), "teste")
 
+
+# ---------- ALAVANCAS liga toggle a coluna PELO NOME ----------
+#
+# `ladder.ALAVANCAS` associa o toggle "palette" à coluna `colors`, "lossy" à
+# `lossy` e assim por diante, só pelo nome. Um formato novo com uma coluna
+# chamada `colors` que não é uma paleta (ou `lossy` que não é o lossy do
+# gifsicle) ficaria ligado à caixa errada em silêncio. O teste abaixo trava o
+# que cada formato tem ligado: um formato novo, ou uma coluna nova num
+# existente, FALHA aqui até alguém declarar de propósito que a ligação é
+# verdadeira.
+
+COLUNAS_LIGADAS_A_TOGGLES: dict[Formato, set[str]] = {
+    Formato.GIF: {"colors", "lossy", "scale_pct", "fps"},
+    Formato.PNG: {"colors", "scale_pct"},
+    Formato.JPEG: {"scale_pct"},
+    Formato.WEBP: {"scale_pct"},
+}
+
+
+def test_todo_formato_registrado_declara_as_colunas_que_os_toggles_controlam():
+    assert set(COLUNAS_LIGADAS_A_TOGGLES) == formatos.registrados()
+
+
+@pytest.mark.parametrize("formato", sorted(formatos.registrados()))
+def test_colunas_ligadas_a_toggles_sao_as_declaradas(formato):
+    campos = {f.name for f in dataclasses.fields(formatos.para(formato).Params)}
+    ligadas = campos & set(ALAVANCAS.values())
+    assert ligadas == COLUNAS_LIGADAS_A_TOGGLES[formato], (
+        f"[{formato.name}] colunas ligadas a toggles pelo NOME: {sorted(ligadas)}. "
+        f"Confirme que cada uma tem mesmo o significado do toggle "
+        f"({ {t: c for t, c in ALAVANCAS.items() if c in ligadas} }) e atualize "
+        f"COLUNAS_LIGADAS_A_TOGGLES."
+    )
