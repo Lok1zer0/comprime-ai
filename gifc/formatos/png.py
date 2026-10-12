@@ -10,7 +10,7 @@ que o original.
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PIL import Image, ImageOps, PngImagePlugin
@@ -70,6 +70,14 @@ NEUTROS: dict[str, object] = {
     "colors": None,
     "scale_pct": 100,
 }
+
+
+def chave_de_equivalencia(params: Params, tools: Tools) -> object:
+    """Sem oxipng instalado o nível `-o` não faz nada: os degraus 0 e 1, que
+    só diferem nele, geram o MESMO arquivo (uma cópia da entrada), e um deles
+    seria uma codificação desperdiçada. Os com perda diferem em cores ou
+    escala, então não se fundem."""
+    return params if tools.oxipng is not None else replace(params, oxipng=0)
 
 
 def build_oxipng_cmd(tools: Tools, alvo: Path, params: Params) -> list[str]:

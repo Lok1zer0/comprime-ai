@@ -91,15 +91,22 @@ def montar_escada(
     atravessar.
 
     O prefixo é calculado sobre a MESMA transformação da escada inteira (os
-    toggles efetivos e a deduplicação): a deduplicação mantém o primeiro de
-    cada grupo de degraus iguais e o prefixo é o começo da tabela, então o
-    dele é o começo da escada.
+    toggles efetivos e as duas deduplicações, a dos toggles e a dos degraus
+    equivalentes nesta máquina): elas mantêm o primeiro de cada grupo e o
+    prefixo é o começo da tabela, então o dele é o começo da escada.
     """
     modulo = formatos.para(formato)
     toggles = formatos.toggles_efetivos(formato, toggles, tools)
-    escada = aplicar_toggles(modulo.TABELA, info, toggles, modulo.NEUTROS)
-    prefixo = aplicar_toggles(
-        modulo.TABELA[: len(modulo.SEM_PERDA)], info, toggles, modulo.NEUTROS
+    escada = formatos.sem_equivalentes(
+        formato, aplicar_toggles(modulo.TABELA, info, toggles, modulo.NEUTROS),
+        tools,
+    )
+    prefixo = formatos.sem_equivalentes(
+        formato,
+        aplicar_toggles(
+            modulo.TABELA[: len(modulo.SEM_PERDA)], info, toggles, modulo.NEUTROS
+        ),
+        tools,
     )
     return escada, len(prefixo)
 

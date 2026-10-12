@@ -18,7 +18,20 @@ TIMEOUT_SEGUNDOS = 600
 
 
 class EncodeError(Exception):
-    """Um dos estágios de codificação falhou."""
+    """Um dos estágios de codificação falhou.
+
+    Dentro do `encode_fn` do `compress_file` quer dizer "ESTE degrau falhou":
+    tenta-se de novo e, se persistir, a busca segue para o próximo.
+    """
+
+
+class FormatoNaoSuportado(Exception):
+    """O formato não tem módulo em `gifc.formatos`.
+
+    Não é um `EncodeError` de propósito: aquele é "este degrau falhou,
+    continue", e este é "este arquivo é impossível". Nenhum retry nem
+    degrau seguinte resolve.
+    """
 
 
 def executar(cmd: list[str], etapa: str) -> None:
@@ -65,6 +78,11 @@ class ModuloFormato(Protocol):
       toggles às ferramentas disponíveis. Quem o chama é
       `formatos.toggles_efetivos`, que devolve os toggles inalterados se o
       módulo não o define.
+    - `chave_de_equivalencia(params, tools) -> Hashable` (OPCIONAL): duas
+      `Params` com a mesma chave geram o MESMO arquivo com estas ferramentas
+      (p. ex. o nível do oxipng, sem oxipng instalado). Quem a usa é
+      `formatos.sem_equivalentes`, que mantém só o primeiro de cada grupo
+      para não gastar uma codificação à toa.
     - `codificar`: parte sempre de `src` e escreve `dst`; devolve o tamanho.
     """
 

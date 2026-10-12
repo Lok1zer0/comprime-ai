@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from gifc import formatos
 from gifc.compress import _try_path
@@ -69,3 +70,65 @@ def test_toggles_efetivos_sem_gancho_devolve_inalterado(monkeypatch):
     sem_gifsicle = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", gifsicle=None)
     todos = Toggles(True, True, True, True)
     assert formatos.toggles_efetivos(Formato.GIF, todos, sem_gifsicle) is todos
+
+
+# --- formato sem módulo: não é falha de degrau -----------------------------
+
+
+def test_formato_sem_modulo_levanta_o_tipo_proprio(monkeypatch):
+    """`EncodeError` dentro do `encode_fn` quer dizer "este degrau falhou,
+    continue"; de `formatos.para` quer dizer "este arquivo é impossível".
+    Tipos diferentes, para ninguém confundir um com o outro."""
+    monkeypatch.delitem(formatos._REGISTRO, Formato.WEBP)
+
+    with pytest.raises(formatos.FormatoNaoSuportado, match="WEBP"):
+        formatos.para(Formato.WEBP)
+    assert not issubclass(formatos.FormatoNaoSuportado, formatos.EncodeError)
+
+
+def test_formato_sem_modulo_nao_vira_degrau_que_falhou(tmp_path, monkeypatch):
+    """No `compress_file` o erro sobe de uma vez: nenhum degrau é tentado, e
+    nada fica para trás."""
+    from gifc.compress import compress_file
+
+    monkeypatch.delitem(formatos._REGISTRO, Formato.WEBP)
+    src = tmp_path / "a.png"
+    Image.new("RGB", (8, 8), "red").save(src)
+
+    with pytest.raises(formatos.FormatoNaoSuportado):
+        compress_file(
+            src, 1, Toggles(), Tools("ffmpeg", "ffprobe", None), converter_webp=True,
+        )
+    assert [p.name for p in tmp_path.iterdir()] == ["a.png"]
+
+
+# --- degraus equivalentes ---------------------------------------------------
+
+
+def test_sem_equivalentes_sem_gancho_devolve_a_escada_inalterada(monkeypatch):
+    sem_gancho = SimpleNamespace()
+    monkeypatch.setattr(formatos, "para", lambda formato: sem_gancho)
+    escada = [object(), object()]
+    sem_ferramentas = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", gifsicle=None)
+    assert formatos.sem_equivalentes(Formato.GIF, escada, sem_ferramentas) == escada
+
+
+def test_sem_equivalentes_mantem_o_primeiro_de_cada_grupo(monkeypatch):
+    gancho = SimpleNamespace(chave_de_equivalencia=lambda p, tools: p // 10)
+    monkeypatch.setattr(formatos, "para", lambda formato: gancho)
+    sem_ferramentas = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", gifsicle=None)
+    assert formatos.sem_equivalentes(
+        Formato.GIF, [11, 12, 25, 21, 33, 39], sem_ferramentas
+    ) == [11, 25, 33]
+
+
+def test_png_sem_oxipng_funde_os_degraus_sem_perda():
+    from gifc.formatos import png
+
+    sem = Tools("ffmpeg", "ffprobe", None, oxipng=None)
+    com = Tools("ffmpeg", "ffprobe", None, oxipng="oxipng")
+    antes = formatos.sem_equivalentes(Formato.PNG, list(png.TABELA), com)
+    depois = formatos.sem_equivalentes(Formato.PNG, list(png.TABELA), sem)
+
+    assert antes == list(png.TABELA)             # com oxipng, todos distintos
+    assert depois == [png.TABELA[0], *png.TABELA[2:]]   # o 1 é o mesmo arquivo

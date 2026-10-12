@@ -647,3 +647,16 @@ def test_xmp_nao_volta_a_girar_a_imagem(tmp_path, girada):
         s.load()
         assert s.text.get("Author") == "Fulana"
         assert ("XML:com.adobe.xmp" in s.text) is (not girada)
+
+
+def test_sem_oxipng_os_degraus_zero_e_um_geram_o_mesmo_arquivo(tmp_path):
+    """A premissa de `chave_de_equivalencia`: sem o binário os dois degraus só
+    diferem no nível do oxipng, que não roda, e o arquivo sai byte a byte
+    igual."""
+    src = _png_de_interface(tmp_path / "ui.png")
+    saidas = []
+    for i in (0, 1):
+        dst = tmp_path / f"d{i}.png"
+        codificar(src, dst, TABELA[i], probe(src), SEM_OXIPNG)
+        saidas.append(dst.read_bytes())
+    assert saidas[0] == saidas[1] == src.read_bytes()

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Hashable, Sequence
+from typing import TypeVar
+
 from gifc.formatos import gif, jpeg, png, webp
-from gifc.formatos.base import EncodeError, ModuloFormato
+from gifc.formatos.base import EncodeError, FormatoNaoSuportado, ModuloFormato
 from gifc.ladder import Toggles
 from gifc.probe import Formato
 from gifc.tools import Tools
+
+P = TypeVar("P")
 
 _REGISTRO: dict[Formato, ModuloFormato] = {
     Formato.GIF: gif,
@@ -26,8 +31,9 @@ _EXTENSAO: dict[Formato, str] = {
 }
 
 __all__ = [
-    "EncodeError", "ModuloFormato", "extensao", "formato_de_saida", "para",
-    "registrados", "toggles_efetivos",
+    "EncodeError", "FormatoNaoSuportado", "ModuloFormato", "extensao",
+    "formato_de_saida", "para", "registrados", "sem_equivalentes",
+    "toggles_efetivos",
 ]
 
 
@@ -58,6 +64,28 @@ def toggles_efetivos(formato: Formato, toggles: Toggles, tools: Tools) -> Toggle
     return toggles if gancho is None else gancho(toggles, tools)
 
 
+def sem_equivalentes(formato: Formato, escada: Sequence[P], tools: Tools) -> list[P]:
+    """`escada` sem os degraus que, com estas ferramentas, gerariam o mesmo
+    arquivo de um anterior (fica o primeiro de cada grupo).
+
+    Delega ao gancho opcional `chave_de_equivalencia` do módulo; sem ele a
+    escada passa inalterada. Complementa `toggles_efetivos`: aquele cobre o
+    que um toggle do usuário desliga, este o que só a falta de uma ferramenta
+    torna inerte (uma coluna sem toggle, como o nível do oxipng).
+    """
+    chave = getattr(para(formato), "chave_de_equivalencia", None)
+    if chave is None:
+        return list(escada)
+    vistas: set[Hashable] = set()
+    saida: list[P] = []
+    for params in escada:
+        k = chave(params, tools)
+        if k not in vistas:
+            vistas.add(k)
+            saida.append(params)
+    return saida
+
+
 def registrados() -> frozenset[Formato]:
     """Os formatos que já têm módulo."""
     return frozenset(_REGISTRO)
@@ -68,6 +96,6 @@ def para(formato: Formato) -> ModuloFormato:
     try:
         return _REGISTRO[formato]
     except KeyError:
-        raise EncodeError(
+        raise FormatoNaoSuportado(
             f"Ainda não há suporte para comprimir arquivos {formato.name}."
         ) from None

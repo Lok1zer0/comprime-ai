@@ -730,6 +730,18 @@ def test_png_ja_otimizado_nao_e_quantizado_para_economizar_um_pouco(
     assert r.final_bytes == 4_850 and r.hit_target is True
 
 
+def test_png_sem_oxipng_so_codifica_um_degrau_sem_perda(tmp_path, monkeypatch):
+    """Sem o oxipng os degraus 0 e 1 geram o MESMO arquivo: um encode a
+    menos, e nenhum degrau quantizado ou reduzido."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    codificados = _curva_falsa(monkeypatch, formato_png, [5_000] * 10)
+
+    r = mod.compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS)
+
+    assert codificados == [0]
+    assert r.already_optimized is True
+
+
 @pytest.mark.parametrize("formato", [Formato.GIF, Formato.JPEG])
 def test_formato_sem_degrau_sem_perda_nao_e_tocado_se_ja_cabe(
     tmp_path, monkeypatch, formato
@@ -1196,3 +1208,16 @@ def test_captura_de_tela_png_para_webp_entrega_o_sem_perda(tmp_path):
     with Image.open(src) as a, Image.open(r.dst) as b:
         assert a.size == b.size
         assert ImageChops.difference(a.convert("RGB"), b.convert("RGB")).getbbox() is None
+
+
+def test_png_sem_oxipng_poupa_um_encode_em_qualquer_alvo(tmp_path, monkeypatch):
+    """Os degraus 0 e 1 geram o mesmo arquivo sem oxipng, e a busca não mede
+    os dois: com alvo apertado, no pior caso, são 1 + 4 codificações e não
+    2 + 4."""
+    mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
+    codificados = _curva_falsa(monkeypatch, formato_png, [4_900] * 10)
+
+    mod.compress_file(src, 100, TODOS, SEM_FERRAMENTAS)
+
+    assert codificados.count(0) == 1 and 1 not in codificados
+    assert len(codificados) <= 1 + 4
