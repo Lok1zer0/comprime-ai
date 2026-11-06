@@ -335,7 +335,12 @@ class App(TkinterDnD.Tk):
     # ---------- construção da interface ----------
 
     def _montar(self) -> None:
-        raiz = ttk.Frame(self, padding=12)
+        # `Fundo.TFrame` e não o TFrame padrão: o tema trabalha com três
+        # níveis de profundidade — janela (FUNDO), caixa (PAINEL), campo
+        # (CAMPO) — e o padrão é PAINEL. Com a raiz em PAINEL a janela fica
+        # chapada, e o badge do título de cada caixa, que é desenhado em
+        # FUNDO, aparece como uma faixa mais escura ao lado do texto.
+        raiz = ttk.Frame(self, padding=12, style="Fundo.TFrame")
         raiz.pack(fill="both", expand=True)
 
         # Continua sendo um ttk.Label de propósito. O `tkdnd` é a parte
@@ -410,13 +415,32 @@ class App(TkinterDnD.Tk):
 
         saida = tema.cria_labelframe(raiz, "Formato de saída", padding=8)
         saida.pack(fill="x", pady=(0, 12))
-        self.cb_webp = ttk.Checkbutton(
-            saida,
-            text="Converter para WebP (PNG e JPEG)",
+        # Duas opções exclusivas, não duas caixas: com checkbox o usuário
+        # poderia desmarcar as duas ou marcar as duas, e nenhum desses
+        # estados existe. Radiobutton sobre a MESMA variável dá exclusão
+        # mútua de graça, e `tg_webp` segue sendo a BooleanVar que o resto
+        # do código já lê.
+        #
+        # "Manter formato original" já era o que acontecia por padrão; o que
+        # faltava era o usuário poder ver isso.
+        linha_saida = ttk.Frame(saida)
+        linha_saida.pack(fill="x")
+        self.rb_manter = ttk.Radiobutton(
+            linha_saida,
+            text="Manter formato original",
             variable=self.tg_webp,
+            value=False,
             command=self._ao_mudar_conversao,
         )
-        self.cb_webp.pack(anchor="w")
+        self.rb_manter.pack(side="left", padx=(0, 24))
+        self.rb_webp = ttk.Radiobutton(
+            linha_saida,
+            text="Converter para WebP (PNG e JPEG)",
+            variable=self.tg_webp,
+            value=True,
+            command=self._ao_mudar_conversao,
+        )
+        self.rb_webp.pack(side="left")
 
         # O rodapé é empacotado ANTES do log, grudado embaixo: com a janela
         # menor que o pedido, é o log que encolhe, não os botões que somem.
@@ -593,9 +617,12 @@ class App(TkinterDnD.Tk):
         aplicaveis = _alavancas_aplicaveis(self._entradas, converter)
         for chave, caixa in self._caixas_alavanca.items():
             caixa.state(["!disabled" if chave in aplicaveis else "disabled"])
-        self.cb_webp.state(
-            ["!disabled" if _conversao_possivel(self._entradas) else "disabled"]
-        )
+        # O par inteiro trava junto: sem conversão possível (só GIF), manter
+        # é o único estado válido, e deixar uma das duas clicável sugeriria
+        # uma escolha que não existe.
+        estado = "!disabled" if _conversao_possivel(self._entradas) else "disabled"
+        self.rb_manter.state([estado])
+        self.rb_webp.state([estado])
 
     # ---------- thread de trabalho ----------
     #

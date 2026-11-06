@@ -543,14 +543,14 @@ def test_alavancas_de_gif_habilitadas_quando_ha_gif(app):
 
 def test_caixa_webp_desabilitada_quando_so_ha_gif(app):
     app._ajustar_alavancas({Formato.GIF})
-    assert _desabilitado(app.cb_webp)
+    assert _desabilitado(app.rb_webp)
 
 
 def test_caixa_webp_habilitada_quando_ha_png_ou_jpeg(app):
     for f in (Formato.PNG, Formato.JPEG):
         app._ajustar_alavancas({Formato.GIF})
         app._ajustar_alavancas({f})
-        assert not _desabilitado(app.cb_webp), f
+        assert not _desabilitado(app.rb_webp), f
 
 
 def test_caixa_webp_desligada_por_padrao(app):
@@ -574,19 +574,20 @@ def test_clicar_na_caixa_reavalia_as_alavancas_sem_nova_soltura(app):
     """O clique real dispara o `command` da caixa: se ele não estiver ligado,
     a paleta ficaria habilitada mas ignorada em silêncio."""
     app._ajustar_alavancas({Formato.PNG})
-    app.cb_webp.invoke()
+    app.rb_webp.invoke()
     try:
         assert app.tg_webp.get() is True
         assert _desabilitado(app.cb_palette)
     finally:
-        app.cb_webp.invoke()
+        # Radiobutton não alterna: para voltar, seleciona-se a outra opção.
+        app.rb_manter.invoke()
         app._ajustar_alavancas(set())
     assert not _desabilitado(app.cb_palette)
 
 
 def test_estado_inicial_tem_tudo_habilitado(app):
     app._ajustar_alavancas(set())
-    for cb in (app.cb_palette, app.cb_lossy, app.cb_scale, app.cb_fps, app.cb_webp):
+    for cb in (app.cb_palette, app.cb_lossy, app.cb_scale, app.cb_fps, app.rb_webp, app.rb_manter):
         assert not _desabilitado(cb)
 
 
@@ -643,7 +644,7 @@ def test_soltar_gif_depois_de_png_reabilita_as_alavancas(app, _lote_falso):
     soltar("b.gif")
     esperar()
     assert not _desabilitado(app.cb_fps)
-    assert _desabilitado(app.cb_webp)
+    assert _desabilitado(app.rb_webp)
 
 
 def test_a_caixa_webp_chega_ao_worker(app, _lote_falso):
@@ -1292,3 +1293,53 @@ def test_a_area_de_arraste_liga_entrada_saida_e_soltura(app):
     ligados = set(app.drop.bind())
     for evento in ("<<DropEnter>>", "<<DropLeave>>", "<<Drop>>"):
         assert evento in ligados, f"faltou ligar {evento}"
+
+
+# ---------- formato de saída: as duas opções são exclusivas ----------
+
+
+def test_manter_formato_original_vem_marcado(app):
+    """Já era o comportamento padrão; o que faltava era o usuário ver."""
+    assert app.tg_webp.get() is False
+
+
+def test_as_duas_opcoes_de_saida_sao_exclusivas(app):
+    """Com checkbox dava para desmarcar as duas ou marcar as duas, e nenhum
+    desses estados existe. Compartilhar a variável resolve por construção."""
+    app.rb_webp.invoke()
+    assert app.tg_webp.get() is True
+    app.rb_manter.invoke()
+    assert app.tg_webp.get() is False
+    app.rb_webp.invoke()
+    assert app.tg_webp.get() is True
+    app.rb_manter.invoke()
+
+
+def test_sem_conversao_possivel_as_duas_opcoes_travam(app):
+    """Só GIF no lote: manter é o único estado válido, então deixar uma das
+    duas clicável ofereceria uma escolha que não existe."""
+    app._ajustar_alavancas({Formato.GIF})
+    assert _desabilitado(app.rb_webp)
+    assert _desabilitado(app.rb_manter)
+    app._ajustar_alavancas({Formato.PNG})
+    assert not _desabilitado(app.rb_webp)
+    assert not _desabilitado(app.rb_manter)
+
+
+def test_o_fundo_atras_das_caixas_casa_com_o_badge_do_titulo(app):
+    """O badge do título de cada caixa é desenhado em FUNDO, porque o tema
+    assume que as caixas moram sobre um frame dessa cor.
+
+    Com a raiz no TFrame padrão (PAINEL) o badge aparecia como uma faixa mais
+    escura ao lado do texto, e a janela inteira ficava chapada — o tema tem
+    três níveis de profundidade e esse pulava o primeiro.
+    """
+    from gifc import tema
+
+    raizes = [w for w in app.winfo_children() if w.winfo_class() == "TFrame"]
+    assert raizes, "a janela não tem frame raiz"
+    fundo = app.estilo.lookup(raizes[0].cget("style") or "TFrame", "background")
+    assert fundo == tema.FUNDO, (
+        f"o frame raiz está em {fundo}, mas o badge do título é desenhado em "
+        f"{tema.FUNDO} — a faixa escura reaparece"
+    )
