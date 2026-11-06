@@ -46,20 +46,20 @@ from gifc.search import Attempt
 
 
 def test_mb_zero():
-    assert _mb(0) == "0.00 MB"
+    assert _mb(0) == "0,0 KB"
 
 
 def test_mb_um_mb_exato():
-    assert _mb(MB) == "1.00 MB"
+    assert _mb(MB) == "1,00 MB"
 
 
 def test_mb_fracionario():
-    assert _mb(int(2.5 * MB)) == "2.50 MB"
+    assert _mb(int(2.5 * MB)) == "2,50 MB"
 
 
 def test_mb_arredonda():
     # 1_500_000 bytes / MB ~= 1.430511...
-    assert _mb(1_500_000) == "1.43 MB"
+    assert _mb(1_500_000) == "1,43 MB"
 
 
 # ---------- _parse_alvo_mb ----------
@@ -221,7 +221,7 @@ def test_log_tentativa_bem_sucedida_mostra_o_tamanho(app):
     app._log_tentativa(a, total=10)
 
     textos = [app.log.item(i, "text") for i in app.log.get_children()]
-    assert any("1.50 MB" in t for t in textos)
+    assert any("1,50 MB" in t for t in textos)
     assert not any("falhou" in t for t in textos)
 
 
@@ -1189,7 +1189,7 @@ def test_original_mantido_de_jpeg_nao_diz_sem_perda():
 
 def test_texto_traz_tamanhos_e_reducao():
     texto = _texto_resultado(_resultado())
-    assert "4.00 MB" in texto and "2.00 MB" in texto and "50%" in texto
+    assert "4,00 MB" in texto and "2,00 MB" in texto and "50%" in texto
 
 
 def test_log_resultado_escreve_o_texto_no_log(app):
@@ -1201,17 +1201,58 @@ def test_log_resultado_escreve_o_texto_no_log(app):
 def test_log_resultado_avisa_quando_nao_atingiu_o_alvo(app):
     app._log_resultado(_resultado(hit_target=False))
     textos = [app.log.item(i, "text") for i in app.log.get_children()]
-    assert len(textos) == 2 and "não deu para chegar" in textos[-1]
+    assert len(textos) == 2 and "você pediu 50%" in textos[-1]
 
 
-def test_aviso_de_alvo_nao_atingido_diz_o_que_se_conseguiu_e_o_que_se_pediu():
-    r = _resultado(hit_target=False)  # 4 MB -> 2 MB
-    texto = _texto_alvo_nao_atingido(r, Alvo.relativo(25))
-    assert "reduzido 50%" in texto and "aos 25% pedidos" in texto
+def _com_final(final: int, original: int = 1000):
+    return _resultado(hit_target=False, original_bytes=original, final_bytes=final)
+
+
+def test_aviso_relativo_diz_o_que_ficou_e_o_que_se_pediu_na_mesma_base():
+    # 1000 -> 680: removeu 32%, ficou em 68% do original, pediu "para 50%".
+    texto = _texto_alvo_nao_atingido(_com_final(680), Alvo.relativo(50))
+    assert "ficou em 68% do original — você pediu 50%" in texto
+    assert "32" not in texto, "a base removida não pode vazar para a frase"
     assert "ATENÇÃO" not in texto and "\n" not in texto
-    absoluto = _texto_alvo_nao_atingido(r, Alvo.absoluto(MB))
-    assert "reduzido 50%" in absoluto and "a 1.00 MB" in absoluto
-    assert "ATENÇÃO" not in absoluto
+    assert "menor tamanho possível sem perder mais qualidade" in texto
+
+
+def test_aviso_pinta_o_quase_acerto_com_uma_casa_abaixo_de_10_por_cento():
+    texto = _texto_alvo_nao_atingido(_com_final(52), Alvo.relativo(5))
+    assert "ficou em 5,2% do original — você pediu 5%" in texto
+    assert "ATENÇÃO" not in texto
+
+
+def test_aviso_acima_de_10_por_cento_nao_tem_casa_decimal():
+    texto = _texto_alvo_nao_atingido(_com_final(123), Alvo.relativo(10))
+    assert "ficou em 12% do original — você pediu 10%" in texto
+
+
+def test_aviso_relativo_com_pedido_fracionario_usa_virgula():
+    texto = _texto_alvo_nao_atingido(_com_final(600), Alvo.relativo(37.5))
+    assert "você pediu 37,5%" in texto
+
+
+def test_aviso_absoluto_diz_os_dois_tamanhos_com_a_mesma_unidade():
+    r = _com_final(int(12.3 * MB), original=20 * MB)
+    texto = _texto_alvo_nao_atingido(r, Alvo.absoluto(10 * MB))
+    assert "ficou em 12,30 MB — você pediu 10,00 MB" in texto
+    assert "ATENÇÃO" not in texto
+
+
+def test_aviso_absoluto_pequeno_nao_vira_zero_mb():
+    r = _com_final(8_500, original=50_000)
+    texto = _texto_alvo_nao_atingido(r, Alvo.absoluto(2_048))
+    assert "ficou em 8,3 KB — você pediu 2,0 KB" in texto
+    assert "0,00" not in texto
+
+
+@pytest.mark.parametrize(
+    "n, esperado",
+    [(0, "0,0 KB"), (512, "0,5 KB"), (8_500, "8,3 KB"), (MB, "1,00 MB")],
+)
+def test_mb_e_adaptativo_e_usa_virgula(n, esperado):
+    assert _mb(n) == esperado
 
 
 def test_o_aviso_usa_o_alvo_do_lote_na_interface(app):
@@ -1221,7 +1262,7 @@ def test_o_aviso_usa_o_alvo_do_lote_na_interface(app):
     finally:
         app._lote_alvo = Alvo.relativo(50)
     textos = [app.log.item(i, "text") for i in app.log.get_children()]
-    assert "aos 10% pedidos" in textos[-1]
+    assert "você pediu 10%" in textos[-1]
 
 
 # ---------- log de tentativas de qualquer formato ----------
@@ -1243,7 +1284,7 @@ def test_log_tentativa_renderiza_todos_os_degraus_de_cada_formato(app, modulo):
         )
     textos = [app.log.item(i, "text") for i in app.log.get_children()]
     assert len(textos) == len(modulo.TABELA)
-    assert all("1.00 MB" in t for t in textos)
+    assert all("1,00 MB" in t for t in textos)
 
 
 @_FORMATOS
@@ -1294,7 +1335,7 @@ def test_log_tentativa_do_gif_mantem_o_formato_antigo(app):
         total=20,
     )
     textos = [app.log.item(i, "text") for i in app.log.get_children()]
-    assert textos == ["  degrau 3/19 · 128 cores · lossy 30 · 100% · orig → 1.50 MB"]
+    assert textos == ["  degrau 3/19 · 128 cores · lossy 30 · 100% · orig → 1,50 MB"]
 
 
 # ---------- do motor real ao texto ----------

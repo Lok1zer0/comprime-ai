@@ -94,8 +94,25 @@ FECHAR_JOIN_TIMEOUT_SEGUNDOS = 2.0
 
 
 def _mb(n: int) -> str:
-    """Formata um tamanho em bytes como string de MB com duas casas."""
-    return f"{n / MB:.2f} MB"
+    """Formata bytes para o usuário: KB abaixo de 1 MB, MB acima.
+
+    Vírgula decimal, como o campo de alvo. Em MB são duas casas; em KB, uma
+    (abaixo de 1 MB, "0,00 MB" esconderia qualquer arquivo pequeno).
+    """
+    if n >= MB:
+        texto = f"{n / MB:.2f} MB"
+    else:
+        texto = f"{n / 1024:.1f} KB"
+    return texto.replace(".", ",")
+
+
+def _pct(valor: float) -> str:
+    """Percentual com vírgula; uma casa decimal abaixo de 10%.
+
+    Sem a casa, 5,2% contra um pedido de 5% leria como "5 contra 5".
+    """
+    texto = f"{valor:.1f}" if valor < 10 else f"{valor:.0f}"
+    return texto.replace(".", ",")
 
 
 def _parse_alvo_mb(texto: str) -> int:
@@ -135,18 +152,22 @@ def _parse_alvo_pct(texto: str) -> float:
 
 
 def _texto_alvo_nao_atingido(r: CompressResult, alvo: Alvo) -> str:
-    """Uma linha calma: o que se conseguiu primeiro, a diferença como dado.
+    """Uma linha calma, com o conseguido e o pedido NA MESMA BASE.
 
-    Com um alvo relativo isto é comum (um PNG só com ganhos sem perda quase
-    nunca chega a 50%) e o arquivo encolheu de verdade, então não é alarme.
+    O alvo relativo é "reduzir PARA N%", o que sobra; `reduction_pct` é o que
+    foi removido. Misturar as duas bases faria 95% removidos parecerem uma
+    falha contra um pedido de 5%. Aqui os dois números são o que ficou.
     """
     if alvo.modo == "relativo":
-        pedido = f"aos {alvo.valor:g}% pedidos"
+        ficou = 100.0 * r.final_bytes / r.original_bytes if r.original_bytes else 100.0
+        frase = (
+            f"ficou em {_pct(ficou)}% do original — "
+            f"você pediu {f'{alvo.valor:g}'.replace('.', ',')}%"
+        )
     else:
-        pedido = f"a {_mb(int(alvo.valor))}"
+        frase = f"ficou em {_mb(r.final_bytes)} — você pediu {_mb(int(alvo.valor))}"
     return (
-        f"  reduzido {r.reduction_pct:.0f}% — não deu para chegar {pedido}; "
-        f"este é o menor tamanho possível sem perder mais qualidade"
+        f"  {frase}; este é o menor tamanho possível sem perder mais qualidade"
     )
 
 
