@@ -23,13 +23,14 @@ from tkinter import BooleanVar, StringVar, messagebox, ttk
 
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
-from gifc import formatos
+from gifc import formatos, tema
 from gifc.compress import CompressResult, compress_file
 from gifc.ladder import ALAVANCAS, Toggles
 from gifc.probe import Formato
 from gifc.search import Attempt, Cancelled
 from gifc.tools import (
     BIN_DIR,
+    PROJECT_ROOT,
     GIFSICLE_URL,
     DownloadError,
     MissingToolError,
@@ -64,6 +65,10 @@ _ROTULO_FORMATO: dict[Formato, str] = {
 _CONVERSIVEIS = frozenset({Formato.PNG, Formato.JPEG})
 
 PRESETS = [("Discord 10", 10.0), ("WhatsApp 16", 16.0), ("5", 5.0), ("2", 2.0)]
+
+# Piso de largura da janela. A altura nunca é fixada: sai do que o layout
+# pede (ver `App._dimensionar`).
+LARGURA_MINIMA = 580
 
 # Pior caso de codificações por arquivo: o prefixo sem perda do formato (ver
 # `SEM_PERDA`), codificado um a um, mais a busca binária sobre o resto da
@@ -260,9 +265,16 @@ def _texto_resultado(r: CompressResult, converteu_webp: bool = False) -> str:
 class App(TkinterDnD.Tk):
     def __init__(self) -> None:
         super().__init__()
+        # O estilo vem antes dos widgets: `aplica` troca o tema ttk para
+        # `clam`, e o tema em vigor decide as métricas de cada widget.
+        self.estilo = tema.aplica(self)
+        tema.identidade_no_windows()
         self.title("Comprime Aí")
-        self.geometry("580x720")
-        self.minsize(480, 600)
+        tema.barra_escura(self)
+        # Devolve False enquanto o .ico não existir — ele é gerado no
+        # empacotamento. Quando `PROJECT_ROOT` passar a seguir o executável
+        # congelado, este caminho acompanha sozinho.
+        tema.icone_da_janela(self, PROJECT_ROOT / "assets" / "icone.ico")
 
         self.tools: Tools | None = None
         self.erro_ferramentas: str | None = None
@@ -291,9 +303,27 @@ class App(TkinterDnD.Tk):
         self.tg_webp = BooleanVar(value=False)
 
         self._montar()
+        self._dimensionar()
         self.protocol("WM_DELETE_WINDOW", self._ao_fechar)
         self._checar_ferramentas()
         self._after_id = self.after(100, self._drenar_fila)
+
+    def _dimensionar(self) -> None:
+        """Dimensiona a janela a partir do que o layout realmente pede.
+
+        Tamanho fixo em número mágico foi o que cortou texto antes: a janela
+        era 580x720 e o conteúdo pedia 743, então o log encolhia e o rótulo
+        do preset sumia. Perguntar ao próprio layout não tem como divergir
+        quando alguém acrescenta um widget.
+
+        O mínimo é o tamanho pedido pela mesma razão: uma janela que o
+        usuário pode encolher abaixo do conteúdo volta a cortar.
+        """
+        self.update_idletasks()
+        largura = max(self.winfo_reqwidth(), LARGURA_MINIMA)
+        altura = self.winfo_reqheight()
+        self.geometry(f"{largura}x{altura}")
+        self.minsize(largura, altura)
 
     # ---------- construção da interface ----------
 
@@ -312,23 +342,28 @@ class App(TkinterDnD.Tk):
         self.drop.drop_target_register(DND_FILES)
         self.drop.dnd_bind("<<Drop>>", self._ao_soltar)
 
-        ttk.Button(raiz, text="Escolher arquivos...", command=self._escolher).pack(
-            fill="x", pady=(6, 12)
-        )
+        tema.botao_arredondado(
+            raiz, "Escolher arquivos...", lamina=True, command=self._escolher
+        ).pack(fill="x", pady=(6, 12))
 
-        alvo = ttk.LabelFrame(raiz, text="Tamanho-alvo", padding=8)
+        alvo = tema.cria_labelframe(raiz, "Tamanho-alvo", padding=8)
         alvo.pack(fill="x")
         linha = ttk.Frame(alvo)
         linha.pack(fill="x")
-        ttk.Entry(linha, textvariable=self.alvo_mb, width=8).pack(side="left")
+        tema.campo_arredondado(
+            linha, textvariable=self.alvo_mb, width=8
+        ).pack(side="left")
         ttk.Label(linha, text="MB").pack(side="left", padx=(4, 12))
+        # Sem `width=` fixo: era `width=11` em caracteres, e "WhatsApp 16"
+        # não cabia com o padding — saía "WhatsApp 1". Cada botão se mede
+        # pelo próprio texto.
         for rotulo, valor in PRESETS:
-            ttk.Button(
-                linha, text=rotulo, width=11,
+            tema.botao_arredondado(
+                linha, rotulo,
                 command=lambda v=valor: self.alvo_mb.set(str(v)),
             ).pack(side="left", padx=2)
 
-        alav = ttk.LabelFrame(raiz, text="Alavancas permitidas", padding=8)
+        alav = tema.cria_labelframe(raiz, "Alavancas permitidas", padding=8)
         alav.pack(fill="x", pady=12)
         # Uma caixa por alavanca de `ladder.ALAVANCAS`, guardada pela mesma
         # chave: é por ela que `_ajustar_alavancas` habilita e desabilita.
@@ -347,7 +382,7 @@ class App(TkinterDnD.Tk):
         self.cb_scale = self._caixas_alavanca["scale"]
         self.cb_fps = self._caixas_alavanca["fps"]
 
-        saida = ttk.LabelFrame(raiz, text="Formato de saída", padding=8)
+        saida = tema.cria_labelframe(raiz, "Formato de saída", padding=8)
         saida.pack(fill="x", pady=(0, 12))
         self.cb_webp = ttk.Checkbutton(
             saida,
@@ -361,12 +396,12 @@ class App(TkinterDnD.Tk):
         # menor que o pedido, é o log que encolhe, não os botões que somem.
         rodape = ttk.Frame(raiz)
         rodape.pack(side="bottom", fill="x", pady=(8, 0))
-        self.btn_cancelar = ttk.Button(
-            rodape, text="Cancelar", command=self._cancelar, state="disabled"
+        self.btn_cancelar = tema.botao_arredondado(
+            rodape, "Cancelar", command=self._cancelar, state="disabled"
         )
         self.btn_cancelar.pack(side="left")
-        self.btn_pasta = ttk.Button(
-            rodape, text="Abrir pasta", command=self._abrir_pasta, state="disabled"
+        self.btn_pasta = tema.botao_arredondado(
+            rodape, "Abrir pasta", command=self._abrir_pasta, state="disabled"
         )
         self.btn_pasta.pack(side="right")
 

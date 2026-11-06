@@ -1171,3 +1171,51 @@ def test_texto_descreve_o_arquivo_escrito_e_nao_o_pedido(
         assert ".webp" not in texto
         assert "nenhum degrau de WebP ficou menor" in texto
         assert "cópia mantida (PNG)" in texto
+
+
+# ---------- geometria: nada pode ser cortado ----------
+#
+# A Tarefa 8 cresceu a janela ao acrescentar o grupo da caixa de WebP e deixou
+# a altura 23px abaixo do que o conteúdo pede. Nada falhou, porque nenhum teste
+# media geometria — o defeito só apareceu quando um humano olhou a tela e viu
+# texto sumindo. Estes dois testes fecham essa classe.
+
+
+def _cortados(w) -> list[str]:
+    """Widgets que receberam menos espaço do que pediram."""
+    achados = []
+    for c in w.winfo_children():
+        pedido = (c.winfo_reqwidth(), c.winfo_reqheight())
+        alocado = (c.winfo_width(), c.winfo_height())
+        # alocado 1x1 significa "ainda não posicionado", não "cortado"
+        if alocado[0] > 1 and alocado[1] > 1:
+            if pedido[0] > alocado[0] or pedido[1] > alocado[1]:
+                texto = ""
+                try:
+                    texto = f" {c.cget('text')!r}"
+                except Exception:
+                    pass
+                achados.append(
+                    f"{c.winfo_class()}{texto}: pede {pedido[0]}x{pedido[1]}, "
+                    f"recebe {alocado[0]}x{alocado[1]}"
+                )
+        achados.extend(_cortados(c))
+    return achados
+
+
+def test_a_janela_cabe_no_proprio_conteudo(app):
+    """A geometria precisa comportar o que o layout pede, senão texto some."""
+    app.update_idletasks()
+    assert app.winfo_reqheight() <= app.winfo_height(), (
+        f"a janela pede {app.winfo_reqwidth()}x{app.winfo_reqheight()} "
+        f"mas tem {app.winfo_width()}x{app.winfo_height()}"
+    )
+    assert app.winfo_reqwidth() <= app.winfo_width()
+
+
+def test_nenhum_widget_e_cortado(app):
+    """Nenhum widget recebe menos espaço do que pede — é assim que o texto
+    do botão 'WhatsApp 16' virava 'WhatsApp 1...' sem nada falhar."""
+    app.update_idletasks()
+    cortados = _cortados(app)
+    assert not cortados, "widgets cortados:\n  " + "\n  ".join(cortados)
