@@ -19,6 +19,7 @@ import threading
 from collections.abc import Callable, Iterable
 from dataclasses import fields
 from pathlib import Path
+import tkinter as tk
 from tkinter import BooleanVar, StringVar, messagebox, ttk
 
 from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -331,16 +332,30 @@ class App(TkinterDnD.Tk):
         raiz = ttk.Frame(self, padding=12)
         raiz.pack(fill="both", expand=True)
 
-        self.drop = ttk.Label(
+        # Continua sendo um ttk.Label de propósito. O `tkdnd` é a parte
+        # mais frágil do app e a única sem teste automático; trocar a classe
+        # do widget arriscaria o que é mais difícil de verificar. O que muda
+        # é só a aparência e a resposta ao arrasto.
+        self.drop = tk.Label(
             raiz,
-            text="Arraste imagens aqui (GIF, PNG, JPEG ou WebP)",
-            anchor="center",
-            relief="ridge",
-            padding=30,
+            text="Arraste imagens aqui\nGIF · PNG · JPEG · WebP",
+            justify="center",
+            background=tema.PAINEL,
+            foreground=tema.APAGADO,
+            font=(tema.FONTE_UI, 11),
+            highlightthickness=2,
+            highlightbackground=tema.BORDA,
+            highlightcolor=tema.BORDA,
+            padx=20,
+            pady=34,
         )
         self.drop.pack(fill="x")
         self.drop.drop_target_register(DND_FILES)
         self.drop.dnd_bind("<<Drop>>", self._ao_soltar)
+        # Sem isto a área não dá sinal nenhum de que aceita o arquivo, e o
+        # usuário solta no escuro.
+        self.drop.dnd_bind("<<DragEnter>>", self._ao_entrar_arrasto)
+        self.drop.dnd_bind("<<DragLeave>>", self._ao_sair_arrasto)
 
         tema.botao_arredondado(
             raiz, "Escolher arquivos...", lamina=True, command=self._escolher
@@ -411,10 +426,14 @@ class App(TkinterDnD.Tk):
         self.status = ttk.Label(raiz, text="Pronto.", anchor="w")
         self.status.pack(fill="x", pady=(6, 4))
 
+        # 12 linhas deixavam metade da janela vazia antes de haver o que
+        # mostrar. 6 cabem o bastante para acompanhar um arquivo, e a área
+        # cresce quando o usuário aumenta a janela.
         self.log = ttk.Treeview(
-            raiz, columns=("msg",), show="tree", height=12, selectmode="none"
+            raiz, columns=("msg",), show="tree", height=6, selectmode="none"
         )
         self.log.pack(fill="both", expand=True)
+        self._mostrar_vazio()
 
 
     # ---------- ferramentas ----------
@@ -456,7 +475,25 @@ class App(TkinterDnD.Tk):
 
     # ---------- entrada de arquivos ----------
 
+    def _realcar_arrasto(self, ativo: bool) -> None:
+        """Pinta a área de arraste conforme o arquivo está ou não por cima."""
+        self.drop.configure(
+            background=tema.CAMPO if ativo else tema.PAINEL,
+            foreground=tema.LAMINA if ativo else tema.APAGADO,
+            highlightbackground=tema.LAMINA if ativo else tema.BORDA,
+            highlightcolor=tema.LAMINA if ativo else tema.BORDA,
+        )
+
+    def _ao_entrar_arrasto(self, evento) -> str:
+        self._realcar_arrasto(True)
+        return evento.action
+
+    def _ao_sair_arrasto(self, evento) -> str:
+        self._realcar_arrasto(False)
+        return evento.action
+
     def _ao_soltar(self, evento) -> None:
+        self._realcar_arrasto(False)
         caminhos = [Path(p) for p in self.splitlist(evento.data)]
         self._processar(caminhos)
 
@@ -518,7 +555,7 @@ class App(TkinterDnD.Tk):
         self.trabalhando = True
         self.cancelar.clear()
         self.btn_cancelar.config(state="normal")
-        self.log.delete(*self.log.get_children())
+        self._limpar_log()
         self._iniciar_lote(len(arquivos))
 
         self._thread = threading.Thread(
@@ -626,7 +663,30 @@ class App(TkinterDnD.Tk):
         elif tipo == "fim":
             self._terminar()
 
+    MARCA_VAZIO = "_vazio_"
+
+    def _mostrar_vazio(self) -> None:
+        """Enche o log com uma linha apagada enquanto não há nada a mostrar.
+
+        Um painel em branco parece defeito; uma linha dizendo o que vai
+        aparecer ali parece intenção.
+        """
+        if not self.log.get_children():
+            self.log.insert(
+                "", "end", iid=self.MARCA_VAZIO,
+                text="   O progresso de cada arquivo aparece aqui.",
+                tags=("vazio",),
+            )
+            self.log.tag_configure("vazio", foreground=tema.APAGADO)
+
+    def _limpar_log(self) -> None:
+        """Esvazia o log e devolve a linha de espera."""
+        self.log.delete(*self.log.get_children())
+        self._mostrar_vazio()
+
     def _log(self, texto: str) -> None:
+        if self.log.exists(self.MARCA_VAZIO):
+            self.log.delete(self.MARCA_VAZIO)
         item = self.log.insert("", "end", text=texto)
         self.log.see(item)
 

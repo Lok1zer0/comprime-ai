@@ -1219,3 +1219,51 @@ def test_nenhum_widget_e_cortado(app):
     app.update_idletasks()
     cortados = _cortados(app)
     assert not cortados, "widgets cortados:\n  " + "\n  ".join(cortados)
+
+
+# ---------- área de arraste e log ----------
+
+
+def test_log_vazio_mostra_o_que_vai_aparecer_ali(app):
+    """Painel em branco parece defeito; uma linha de espera parece intenção."""
+    app._limpar_log()
+    linhas = [app.log.item(i, "text") for i in app.log.get_children()]
+    assert len(linhas) == 1
+    assert "aparece aqui" in linhas[0]
+
+
+def test_a_primeira_mensagem_substitui_a_linha_de_espera(app):
+    app._limpar_log()
+    app._log("primeira mensagem de verdade")
+    linhas = [app.log.item(i, "text") for i in app.log.get_children()]
+    assert linhas == ["primeira mensagem de verdade"]
+
+
+def test_a_linha_de_espera_volta_ao_limpar(app):
+    app._limpar_log()
+    app._log("alguma coisa")
+    app._limpar_log()
+    linhas = [app.log.item(i, "text") for i in app.log.get_children()]
+    assert len(linhas) == 1 and "aparece aqui" in linhas[0]
+
+
+def test_a_linha_de_espera_nao_se_duplica(app):
+    app._limpar_log()
+    app._mostrar_vazio()
+    app._mostrar_vazio()
+    assert len(app.log.get_children()) == 1
+
+
+def test_arrastar_por_cima_realca_a_area_e_volta_ao_sair(app):
+    """Sem retorno visual o usuário solta o arquivo no escuro."""
+    from gifc import tema
+
+    parado = app.drop.cget("background")
+    app._realcar_arrasto(True)
+    por_cima = app.drop.cget("background")
+    assert por_cima != parado
+    assert str(app.drop.cget("highlightbackground")) == tema.LAMINA
+
+    app._realcar_arrasto(False)
+    assert app.drop.cget("background") == parado
+    assert str(app.drop.cget("highlightbackground")) == tema.BORDA
