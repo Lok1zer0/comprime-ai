@@ -57,6 +57,46 @@ comando explícito antes de qualquer coisa depender disso.
    de formato do Pillow; WebP é o mais provável de sumir, e falharia só em
    tempo de execução, num formato só. (Tarefa 4)
 
+## O que copiar do empacotamento do ViralCut
+
+O ViralCut já resolve "o cliente baixa um arquivo, extrai e abre", com o
+mesmo PyInstaller e a mesma necessidade de embutir binários de terceiros.
+Seis coisas de lá valem aqui, cada uma por um motivo que custou caro a quem
+descobriu:
+
+**Baixar e empacotar são passos separados, e o download tem cache.** Lá é
+`scripts/monta_pacote.py`, com as peças guardadas em `build/pacote-cache`
+para que rodar de novo não rebaixe gigabytes. Aqui o ffmpeg são 164 MB: sem
+cache, todo build limpo rebaixa. Os três binários cabem no `binaries=` da
+spec, então o passo separado é só o *download*, não a montagem.
+
+**Versões fixas, nunca "latest".** "O pacote que você testou tem de ser o
+pacote que o cliente recebe." Já fazemos.
+
+**Recusar o build com o `.exe` aberto.** Ele trava os próprios arquivos e o
+build falha no meio, deixando `dist/` pela metade. Uma checagem no começo
+do script evita um diagnóstico confuso.
+
+**Construir numa pasta de estágio e só então substituir.** Lá isso protege
+dados do usuário que moram ao lado do programa. Aqui não há dados assim,
+mas a propriedade de não deixar `dist/` quebrado quando o build falha no
+meio continua valendo, e é barata.
+
+**Modo `--verifica`**, que confere o pacote sem reconstruir.
+
+**O `.ico` é derivado no build, não commitado** — "para não existir binário
+commitado que possa ficar dessincronizado do desenho". O argumento é bom e
+contradiz o que fizemos: hoje `assets/icone.ico` está no repositório. Ver a
+Tarefa 3.
+
+**Tamanhos de ícone 20, 40 e 96 além dos usuais.** O Windows escolhe o
+quadro mais próximo do que precisa em cada escala de DPI; faltando os
+intermediários, ele estica o vizinho e o ícone sai borrado em 125%, 150% e
+175%. Nosso `.ico` atual não os tem.
+
+**Falhar macio no ícone:** sem ícone o programa funciona igual, e derrubar
+o build por causa disso é desproporcional.
+
 ## Estrutura de arquivos
 
 | Arquivo | Responsabilidade |
@@ -68,6 +108,91 @@ comando explícito antes de qualquer coisa depender disso.
 | `comprime-ai.spec` | **novo** — configuração do PyInstaller |
 | `tests/test_pacote.py` | **novo** — verifica o artefato construído |
 | `LICENSE`, `THIRD-PARTY-LICENSES.md` | **novos** — conformidade |
+
+---
+
+### Task 0: Alvo relativo, antes de empacotar
+
+**Files:**
+- Modify: `gifc/compress.py`, `gifc/app.py`
+- Test: `tests/test_compress.py`, `tests/test_app.py`
+
+**Por que primeiro:** mexe na interface, e mudar a interface depois de
+publicar quebra quem já baixou. Tem de estar resolvido antes da Tarefa 3.
+
+**O problema, medido.** O alvo padrão de 10 MB está errado para quase
+qualquer arquivo real. O piso — quando a entrada já cabe no alvo, só são
+elegíveis os degraus conservadores — faz todo sentido, mas com 10 MB de
+padrão praticamente tudo já cabe, então quase todo usuário vê só a economia
+de graça. No mesmo GIF:
+
+| Alvo | Economia |
+|---|---|
+| 10 MB (padrão atual) | **2,2%** |
+| 75% da entrada | 46,3% |
+| 50% da entrada | 59,7% |
+| 25% da entrada | 85,5% |
+
+A engine faz 85%. O padrão é que esconde.
+
+**O modelo novo:** dois modos, com o relativo como padrão.
+
+```
+Tamanho-alvo
+ (•) Reduzir para [50] %
+ ( ) Caber em     [10] MB   [Discord 10] [WhatsApp 16] [5] [2]
+```
+
+Radio, não caixa — mesmo raciocínio de "Formato de saída": os dois modos são
+exclusivos e um sempre vale.
+
+**A consequência de interface que não é óbvia:** um alvo relativo é **por
+arquivo**, porque depende do tamanho de cada entrada. A interface não tem
+como pré-calcular um número de bytes para o lote. Então `compress_file`
+precisa resolver o alvo depois de medir o arquivo.
+
+- Produces: `Alvo`, congelada, com `bytes_para(tamanho_original: int) -> int`
+  e dois construtores — `Alvo.absoluto(bytes)` e `Alvo.relativo(pct)`
+- `compress_file(src, alvo: Alvo, toggles, tools, converter_webp=False, ...)`
+  substitui o `target_bytes: int` de hoje
+
+O piso e o limite `min(alvo, tamanho - 1)` continuam valendo sobre o alvo
+já resolvido. No modo relativo o piso quase nunca dispara, que é o ponto.
+`hit_target` segue medido contra o alvo do usuário, agora o resolvido.
+
+- [ ] **Step 1: Escrever os testes que falham**
+
+```python
+def test_alvo_absoluto_ignora_o_tamanho_da_entrada()
+def test_alvo_relativo_escala_com_a_entrada()      # 50% de 1000 -> 500
+def test_alvo_relativo_nunca_devolve_zero()        # arquivo de 1 byte
+def test_alvo_relativo_recusa_percentual_invalido()  # 0, 101, negativo
+
+@pytest.mark.integration
+def test_o_mesmo_arquivo_rende_mais_com_alvo_relativo(tmp_path)
+    # o número da tabela acima: 50% entrega muito mais que 10 MB
+```
+
+E na interface: o modo padrão é o relativo em 50%; alternar desabilita o
+campo do outro modo; os presets em MB selecionam o modo absoluto junto.
+
+- [ ] **Step 2: Rodar e confirmar que falham**
+
+Run: `python -m pytest tests/test_compress.py -v -k alvo`
+
+- [ ] **Step 3: Implementar**
+
+- [ ] **Step 4: Rodar a suíte inteira**
+
+Run: `python -m pytest -v`
+Expected: verde, xfail ainda XFAIL, zero avisos
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add gifc/ tests/
+git commit -m "Alvo relativo como padrão, absoluto para limite externo"
+```
 
 ---
 
@@ -188,6 +313,10 @@ def test_download_real_do_ffmpeg(tmp_path)
 Este passo transfere 164 MB. **Confirme com o dono do projeto antes de
 rodar.**
 
+Guarde o zip baixado num cache (`build/cache-de-pacotes/`, fora do git) e
+reaproveite-o quando o hash bater. Sem isso, todo build limpo rebaixa os
+164 MB — é a razão de o ViralCut ter um cache.
+
 ```bash
 python -c "from pathlib import Path; from gifc.tools import download_ffmpeg; print(download_ffmpeg(Path('bin')))"
 ```
@@ -263,8 +392,28 @@ Pontos que a spec fixa:
   formato; a Tarefa 4 tem teste para isso, mas declare `hiddenimports` do
   Pillow se o teste acusar falta.
 - Ícone a partir de `assets/icone.ico`
+- **`excludes=`** para o que o PyInstaller arrasta e nada usa. Comece por
+  `pytest`; confira o que mais aparece no relatório de tamanho e corte o que
+  não for usado em runtime. O ViralCut cortou ~194 MB assim.
 
-- [ ] **Step 1: Conferir o ícone (já feito, só validar)**
+- [ ] **Step 0: Decidir se o `.ico` fica commitado**
+
+Hoje `assets/icone.ico` está no repositório. O ViralCut deriva o dele no
+build e não commita, com o argumento de que um binário commitado
+dessincroniza do desenho. O argumento é bom.
+
+O contra: derivando só no build, a janela fica sem ícone em desenvolvimento
+até alguém rodar o script.
+
+Resolução sugerida: **gerar na spec, como o ViralCut faz**, e fazer
+`tema.icone_da_janela` chamar o gerador quando o `.ico` não existir. Aí o
+PNG é a única fonte da verdade e o desenvolvimento também tem ícone. Se
+adotar, remova `assets/icone.ico` do git.
+
+**Acrescente os tamanhos 20, 40 e 96** de qualquer forma: o `.ico` atual não
+os tem, e sem eles o Windows estica o vizinho em 125%, 150% e 175% de DPI.
+
+- [ ] **Step 1: Conferir o ícone**
 
 `tools/gerar_icone.py` e `assets/icone.ico` já existem: o dono do projeto
 forneceu `assets/cai-logo.png` e o ícone é derivado dele, nos tamanhos 16, 24,
@@ -295,9 +444,23 @@ para as notas da release.
 
 - [ ] **Step 4: Escrever `tools/build.py`**
 
-Garantir os três binários em `bin/` (baixando se faltar), gerar o ícone se
-faltar, rodar o PyInstaller no modo escolhido, e imprimir tamanho final e
-tempo de abertura.
+Garantir os três binários em `bin/` (baixando se faltar, do cache quando
+houver), gerar o ícone, rodar o PyInstaller no modo escolhido, e imprimir
+tamanho final e tempo de abertura.
+
+Três comportamentos copiados do ViralCut, cada um por um motivo concreto:
+
+- **Recusar quando o `.exe` do pacote está aberto.** Ele trava os próprios
+  arquivos, o PyInstaller falha no meio e o erro não diz a causa. Uma
+  checagem no começo poupa um diagnóstico confuso.
+- **Construir numa pasta de estágio e só então substituir `dist/`.** Um
+  build que falha no meio não deixa o pacote anterior quebrado.
+- **Um modo `--verifica`** que confere o pacote existente sem reconstruir —
+  útil quando só se quer rodar os testes da Tarefa 4.
+
+Falhar alto e claro: se um binário não estiver lá e o download não for
+possível, diga o que baixar e onde pôr. Falhar **macio** no ícone: sem ele
+o programa funciona igual.
 
 Falhar alto e claro: se um binário não estiver lá e o download não for
 possível, diga o que baixar e onde pôr.
