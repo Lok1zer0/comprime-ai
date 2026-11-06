@@ -52,7 +52,7 @@ class Alvo:
     def relativo(cls, pct: float) -> Alvo:
         # `not (0 < pct <= 100)` também recusa NaN, que falha toda comparação.
         if not (0 < pct <= 100):
-            raise ValueError("O percentual deve estar entre 0 e 100.")
+            raise ValueError("O percentual deve ser maior que 0 e no máximo 100.")
         return cls("relativo", float(pct))
 
     def bytes_para(self, tamanho_original: int) -> int:

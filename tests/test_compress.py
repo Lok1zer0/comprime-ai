@@ -1365,7 +1365,7 @@ def test_o_alvo_relativo_e_resolvido_por_arquivo_dentro_do_compress_file(
     assert pequeno.hit_target is False     # 3.000 >  2.400
 
 
-def test_hit_target_e_medido_contra_o_alvo_resolvido_e_nao_contra_o_limite(
+def test_hit_target_relativo_separa_50_por_cento_de_49_num_resultado_de_2500_de_5006(
     tmp_path, monkeypatch
 ):
     mod, src, info, tools = _preparar(tmp_path, monkeypatch)  # 5.006 B

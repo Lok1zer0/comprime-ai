@@ -31,6 +31,7 @@ from gifc.app import (
     _mb,
     _parse_alvo_mb,
     _parse_alvo_pct,
+    _texto_alvo_nao_atingido,
     _texto_resultado,
 )
 from gifc.compress import Alvo, CompressResult
@@ -707,6 +708,12 @@ def test_parse_alvo_pct_aceita_numero_com_virgula_ou_ponto(texto, esperado):
     assert _parse_alvo_pct(texto) == esperado
 
 
+@pytest.mark.parametrize("texto", ["inf", "-inf", "nan", "1e400"])
+def test_parse_alvo_mb_recusa_o_nao_finito_em_portugues(texto):
+    with pytest.raises(ValueError, match="MB maior que zero"):
+        _parse_alvo_mb(texto)
+
+
 @pytest.mark.parametrize("texto", ["", "  ", "abc", "0", "-5", "101", "nan"])
 def test_parse_alvo_pct_recusa_o_invalido(texto):
     with pytest.raises(ValueError):
@@ -771,6 +778,34 @@ def test_o_lote_recebe_o_alvo_absoluto_depois_de_um_preset(app, _lote_falso):
     soltar("a.png")
     esperar()
     assert chamadas[-1][1] == Alvo.absoluto(16 * MB)
+
+
+@pytest.mark.parametrize("texto", ["inf", "-inf", "nan", "1e400"])
+def test_mb_nao_finito_avisa_em_portugues_e_nao_dispara_o_worker(
+    app, _lote_falso, texto, monkeypatch
+):
+    soltar, _, chamadas, _ = _lote_falso
+    mensagens: list[str] = []
+    import gifc.app as app_mod
+    monkeypatch.setattr(
+        app_mod.messagebox, "showerror", lambda t, m, **k: mensagens.append(m)
+    )
+    app.modo_alvo.set("absoluto")
+    app.alvo_mb.set(texto)
+    soltar("a.png")
+    assert chamadas == [] and app.trabalhando is False
+    assert mensagens == ["Informe um número de MB maior que zero."]
+
+
+def test_estouro_inesperado_no_alvo_tambem_avisa(app, _lote_falso, monkeypatch):
+    """Defesa em profundidade: um OverflowError que escape do parse não pode
+    virar silêncio num app sem console."""
+    soltar, _, chamadas, _ = _lote_falso
+    def estoura():
+        raise OverflowError("cannot convert float infinity to integer")
+    monkeypatch.setattr(app, "_alvo_da_interface", estoura)
+    soltar("a.png")
+    assert chamadas == [] and erros == ["Alvo inválido"]
 
 
 def test_o_campo_do_modo_inativo_nao_atrapalha(app, _lote_falso):
@@ -1166,7 +1201,27 @@ def test_log_resultado_escreve_o_texto_no_log(app):
 def test_log_resultado_avisa_quando_nao_atingiu_o_alvo(app):
     app._log_resultado(_resultado(hit_target=False))
     textos = [app.log.item(i, "text") for i in app.log.get_children()]
-    assert any("ATENÇÃO" in t for t in textos)
+    assert len(textos) == 2 and "não deu para chegar" in textos[-1]
+
+
+def test_aviso_de_alvo_nao_atingido_diz_o_que_se_conseguiu_e_o_que_se_pediu():
+    r = _resultado(hit_target=False)  # 4 MB -> 2 MB
+    texto = _texto_alvo_nao_atingido(r, Alvo.relativo(25))
+    assert "reduzido 50%" in texto and "aos 25% pedidos" in texto
+    assert "ATENÇÃO" not in texto and "\n" not in texto
+    absoluto = _texto_alvo_nao_atingido(r, Alvo.absoluto(MB))
+    assert "reduzido 50%" in absoluto and "a 1.00 MB" in absoluto
+    assert "ATENÇÃO" not in absoluto
+
+
+def test_o_aviso_usa_o_alvo_do_lote_na_interface(app):
+    app._lote_alvo = Alvo.relativo(10)
+    try:
+        app._log_resultado(_resultado(hit_target=False))
+    finally:
+        app._lote_alvo = Alvo.relativo(50)
+    textos = [app.log.item(i, "text") for i in app.log.get_children()]
+    assert "aos 10% pedidos" in textos[-1]
 
 
 # ---------- log de tentativas de qualquer formato ----------

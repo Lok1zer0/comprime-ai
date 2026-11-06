@@ -12,6 +12,7 @@ thread principal.
 
 from __future__ import annotations
 
+import math
 import queue
 import subprocess
 import sys
@@ -108,9 +109,14 @@ def _parse_alvo_mb(texto: str) -> int:
     if not texto:
         raise ValueError("Informe um número de MB maior que zero.")
     valor = float(texto)
-    if valor <= 0:
-        raise ValueError("O alvo deve ser maior que zero.")
+    # `not (valor > 0)` também recusa NaN; `isfinite` recusa inf/1e400, que
+    # estourariam em `int()` com uma mensagem em inglês (ou nenhuma).
+    if not math.isfinite(valor) or valor <= 0:
+        raise ValueError("Informe um número de MB maior que zero.")
     return int(valor * MB)
+
+
+PCT_INVALIDO = "O percentual deve ser maior que 0 e no máximo 100."
 
 
 def _parse_alvo_pct(texto: str) -> float:
@@ -121,11 +127,27 @@ def _parse_alvo_pct(texto: str) -> float:
     """
     texto = texto.strip().replace(",", ".")
     if not texto:
-        raise ValueError("Informe um percentual entre 1 e 100.")
+        raise ValueError(PCT_INVALIDO)
     valor = float(texto)
     if not (0 < valor <= 100):
-        raise ValueError("O percentual deve ser maior que 0 e no máximo 100.")
+        raise ValueError(PCT_INVALIDO)
     return valor
+
+
+def _texto_alvo_nao_atingido(r: CompressResult, alvo: Alvo) -> str:
+    """Uma linha calma: o que se conseguiu primeiro, a diferença como dado.
+
+    Com um alvo relativo isto é comum (um PNG só com ganhos sem perda quase
+    nunca chega a 50%) e o arquivo encolheu de verdade, então não é alarme.
+    """
+    if alvo.modo == "relativo":
+        pedido = f"aos {alvo.valor:g}% pedidos"
+    else:
+        pedido = f"a {_mb(int(alvo.valor))}"
+    return (
+        f"  reduzido {r.reduction_pct:.0f}% — não deu para chegar {pedido}; "
+        f"este é o menor tamanho possível sem perder mais qualidade"
+    )
 
 
 def _filtrar_caminhos(caminhos: Iterable[Path]) -> tuple[list[Path], int]:
@@ -311,6 +333,8 @@ class App(TkinterDnD.Tk):
         # Se o lote atual pediu a conversão. Gravado em `_processar` (thread
         # principal) e lido em `_log_resultado` (também): o worker não o toca.
         self._lote_converteu = False
+        # O alvo do lote atual, para o aviso de "não chegou" (thread principal).
+        self._lote_alvo = Alvo.relativo(50)
 
         # Progresso do lote atual (ver _iniciar_lote / _atualizar_progresso).
         self.total_arquivos = 0
@@ -619,7 +643,7 @@ class App(TkinterDnD.Tk):
         # dentro de `compress_file`, arquivo a arquivo.
         try:
             alvo = self._alvo_da_interface()
-        except ValueError as exc:
+        except (ValueError, OverflowError) as exc:
             messagebox.showerror("Alvo inválido", str(exc))
             return
 
@@ -635,6 +659,7 @@ class App(TkinterDnD.Tk):
         # o que vale é o que ela pode fazer.
         converter_webp = self.tg_webp.get() and _conversao_possivel(self._entradas)
         self._lote_converteu = converter_webp
+        self._lote_alvo = alvo
 
         self.trabalhando = True
         self.cancelar.clear()
@@ -840,10 +865,7 @@ class App(TkinterDnD.Tk):
         self._atualizar_progresso()
         self._log(_texto_resultado(r, self._lote_converteu))
         if not r.hit_target:
-            self._log(
-                f"  ATENÇÃO: não foi possível chegar ao alvo. "
-                f"Menor tamanho possível: {_mb(r.final_bytes)}"
-            )
+            self._log(_texto_alvo_nao_atingido(r, self._lote_alvo))
 
     def _terminar(self) -> None:
         self.trabalhando = False
