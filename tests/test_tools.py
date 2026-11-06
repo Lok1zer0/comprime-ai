@@ -1,4 +1,5 @@
 import dataclasses
+import hashlib
 import io
 import sys
 import zipfile
@@ -11,6 +12,8 @@ from gifc.tools import (
     BIN_DIR,
     PROJECT_ROOT,
     _pasta_do_app,
+    _baixar_zip,
+    _gravar_atomico,
     GIFSICLE_SHA256,
     GIFSICLE_URL,
     OXIPNG_SHA256,
@@ -463,3 +466,123 @@ def test_erro_fora_do_bundle_manda_checar_o_path(monkeypatch):
     _solto(monkeypatch)
     msg = str(MissingToolError("ffmpeg"))
     assert "ffmpeg" in msg and "PATH" in msg
+
+
+# --- o que `download_ffmpeg` entrega a `_baixar_zip` -----------------------
+# Os testes acima trocam `_baixar_zip` por um lambda que aceita qualquer
+# argumento, então nenhum deles notaria `download_ffmpeg` passando a URL do
+# gifsicle ou o tamanho do oxipng. Sem este teste, um argumento trocado só
+# apareceria no teste de integração, que baixa 132 MB da rede e por isso não
+# roda a cada alteração.
+
+
+def test_download_ffmpeg_passa_a_url_o_tamanho_e_o_hash_do_proprio_ffmpeg(
+    tmp_path, monkeypatch
+):
+    capturado = {}
+
+    def _espiao(nome, url, tamanho, sha256, on_progress):
+        capturado.update(nome=nome, url=url, tamanho=tamanho, sha256=sha256)
+        raise DownloadError("parando aqui; o que importa são os argumentos")
+
+    monkeypatch.setattr("gifc.tools._baixar_zip", _espiao)
+    with pytest.raises(DownloadError):
+        download_ffmpeg(tmp_path / "bin", cache_dir=tmp_path / "cache")
+    assert capturado == {
+        "nome": "ffmpeg",
+        "url": FFMPEG_URL,
+        "tamanho": FFMPEG_SIZE,
+        "sha256": FFMPEG_SHA256,
+    }
+
+
+# --- escrita atômica -------------------------------------------------------
+
+
+def test_gravar_atomico_nao_deixa_parcial_quando_a_escrita_falha(
+    tmp_path, monkeypatch
+):
+    """Disco cheio no meio da escrita não pode deixar lixo no `bin/`.
+
+    O `.parcial` que sobrasse não engana o `find_tools`, mas o empacotamento
+    copia o `bin/` inteiro, então ele viajaria dentro do pacote publicado.
+    """
+    destino = tmp_path / "bin" / "ffmpeg.exe"
+    original = Path.write_bytes
+
+    def _enche_o_disco(self, dados):
+        original(self, dados[: len(dados) // 2])  # grava um pedaço e desiste
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_bytes", _enche_o_disco)
+    with pytest.raises(OSError):
+        _gravar_atomico(destino, b"M" * 64)
+    monkeypatch.undo()
+    assert sorted(p.name for p in destino.parent.iterdir()) == []
+
+
+def test_gravar_atomico_substitui_o_arquivo_que_ja_estava_la(tmp_path):
+    destino = tmp_path / "ffmpeg.exe"
+    destino.write_bytes(b"versao antiga")
+    _gravar_atomico(destino, b"versao nova")
+    assert destino.read_bytes() == b"versao nova"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["ffmpeg.exe"]
+
+
+# --- teto de tamanho do download ------------------------------------------
+
+
+class _RespostaFalsa:
+    """Mínimo de `urlopen` que o `_baixar_zip` usa: headers, read, context."""
+
+    def __init__(self, corpo: bytes, content_length: int | None = None):
+        self._restante = corpo
+        tamanho = len(corpo) if content_length is None else content_length
+        self.headers = {"Content-Length": str(tamanho)}
+
+    def read(self, n: int) -> bytes:
+        pedaco, self._restante = self._restante[:n], self._restante[n:]
+        return pedaco
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+def _servir(monkeypatch, corpo: bytes, content_length: int | None = None) -> None:
+    monkeypatch.setattr(
+        "gifc.tools.urllib.request.urlopen",
+        lambda url, timeout=None: _RespostaFalsa(corpo, content_length),
+    )
+
+
+def test_baixar_zip_aceita_o_arquivo_de_tamanho_exato(monkeypatch):
+    """O teto é o tamanho esperado, então o arquivo certo passa raspando."""
+    corpo = b"x" * 200_000  # mais de um pedaço de 64 KB
+    _servir(monkeypatch, corpo)
+    sha = hashlib.sha256(corpo).hexdigest()
+    assert _baixar_zip("teste", "http://exemplo", len(corpo), sha, None) == corpo
+
+
+def test_baixar_zip_desiste_assim_que_passa_do_tamanho_esperado(monkeypatch):
+    """Um byte além do tamanho fixado já impede o hash de bater.
+
+    Parar na hora é o que mantém o pico de memória perto do tamanho do
+    arquivo: com o teto antigo de 4x, um servidor trocado podia nos fazer
+    acumular meio giga antes de a conferência reprovar.
+    """
+    esperado = 200_000
+    corpo = b"x" * (esperado * 3)
+    _servir(monkeypatch, corpo)
+    with pytest.raises(DownloadError, match="passou do tamanho esperado"):
+        _baixar_zip("teste", "http://exemplo", esperado, "0" * 64, None)
+
+
+def test_baixar_zip_recusa_o_arquivo_de_tamanho_certo_e_conteudo_errado(monkeypatch):
+    corpo = b"y" * 1000
+    _servir(monkeypatch, corpo)
+    outro = hashlib.sha256(b"z" * 1000).hexdigest()
+    with pytest.raises(DownloadError, match="hash esperado"):
+        _baixar_zip("teste", "http://exemplo", len(corpo), outro, None)

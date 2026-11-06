@@ -216,7 +216,12 @@ def _baixar_zip(
     quem for calcular uma porcentagem a partir disso deve tratar esse caso
     por conta própria, para não dividir por zero.
     """
-    limite = tamanho * 4
+    # O teto é o tamanho exato que se espera, não um múltiplo dele: `tamanho`
+    # é fixado junto do SHA256, então qualquer byte além dele já garante que o
+    # hash não vai bater. Parar ali é tão correto quanto conferir no fim e
+    # mantém o pico de memória perto do tamanho do arquivo em vez de 4x ele —
+    # com o ffmpeg de 132 MB, a diferença é entre ~264 MB e ~1 GB.
+    limite = tamanho
     try:
         with urllib.request.urlopen(url, timeout=60) as resp:
             total = int(resp.headers.get("Content-Length", 0))
@@ -230,8 +235,9 @@ def _baixar_zip(
                 baixado += len(pedaco)
                 if baixado > limite:
                     raise DownloadError(
-                        f"O download do {nome} excedeu o tamanho máximo "
-                        f"esperado ({limite} bytes)."
+                        f"O download do {nome} passou do tamanho esperado "
+                        f"({limite} bytes); o arquivo no servidor não é o "
+                        f"que esta versão espera."
                     )
                 if on_progress is not None:
                     on_progress(baixado, total)
@@ -282,10 +288,22 @@ def _binario_em_cache(arquivo: Path, tamanho: int, sha256: str) -> bytes | None:
 
 
 def _gravar_atomico(destino: Path, dados: bytes) -> None:
+    """Grava `dados` em `destino` via arquivo temporário, sem deixar lixo.
+
+    A limpeza do `.parcial` não é zelo estético: `destino` costuma ser o
+    `bin/`, que o empacotamento copia inteiro. Um `ffmpeg.parcial` de 100 MB
+    sobrando de um disco que encheu no meio da escrita iria para dentro do
+    pacote publicado. O `find_tools` não se enganaria com ele (procura
+    `ffmpeg.exe`), então o estrago é só peso — mas é peso enviado ao usuário.
+    """
     parcial = destino.with_suffix(".parcial")
     destino.parent.mkdir(parents=True, exist_ok=True)
-    parcial.write_bytes(dados)
-    parcial.replace(destino)
+    try:
+        parcial.write_bytes(dados)
+        parcial.replace(destino)
+    except OSError:
+        parcial.unlink(missing_ok=True)
+        raise
 
 
 def download_ffmpeg(
