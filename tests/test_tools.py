@@ -16,12 +16,17 @@ from gifc.tools import (
     OXIPNG_SHA256,
     OXIPNG_URL,
     OXIPNG_ZIP_SIZE,
+    FFMPEG_SHA256,
+    FFMPEG_URL,
+    FFMPEG_SIZE,
     DownloadError,
     MissingToolError,
     Tools,
     download_gifsicle,
     dirs_de_busca,
+    download_ffmpeg,
     download_oxipng,
+    ffmpeg_path,
     extract_gifsicle,
     extract_oxipng,
     find_tools,
@@ -207,6 +212,117 @@ def test_download_real_do_oxipng_bate_o_hash(tmp_path):
     destino = download_oxipng(tmp_path)
     assert destino.is_file()
     assert destino.stat().st_size > 100_000
+
+
+# --- ffmpeg ---------------------------------------------------------------
+
+def test_ffmpeg_url_e_https_e_fixada_numa_tag():
+    assert FFMPEG_URL.startswith("https://")
+    assert "/releases/download/ferramentas-v" in FFMPEG_URL
+    assert "latest" not in FFMPEG_URL
+
+
+def test_ffmpeg_path_fica_no_bin_dir(tmp_path):
+    p = ffmpeg_path(tmp_path)
+    assert p.parent == tmp_path
+    assert p.stem == "ffmpeg"
+
+
+def test_ffmpeg_sha256_tem_formato_valido():
+    assert len(FFMPEG_SHA256) == 64
+    int(FFMPEG_SHA256, 16)
+
+
+def test_ffmpeg_url_e_o_espelho_do_projeto():
+    """Apontar de volta para o upstream reintroduz a URL que morreu."""
+    assert "Lok1zer0/comprime-ai/releases/download/" in FFMPEG_URL
+    assert "BtbN" not in FFMPEG_URL
+
+
+def test_ffmpeg_size_e_plausivel():
+    assert 50_000_000 < FFMPEG_SIZE < 400_000_000
+
+
+BINARIO = b"MZ-ffmpeg-falso"
+
+
+def _fixar_binario_falso(monkeypatch) -> None:
+    import hashlib
+    monkeypatch.setattr("gifc.tools.FFMPEG_SHA256", hashlib.sha256(BINARIO).hexdigest())
+    monkeypatch.setattr("gifc.tools.FFMPEG_SIZE", len(BINARIO))
+
+
+def test_download_ffmpeg_grava_o_exe_e_guarda_no_cache(tmp_path, monkeypatch):
+    _fixar_binario_falso(monkeypatch)
+    chamadas = []
+    monkeypatch.setattr("gifc.tools._baixar_zip",
+                        lambda *a, **k: chamadas.append(a) or BINARIO)
+    cache = tmp_path / "cache"
+    destino = download_ffmpeg(tmp_path / "bin", cache_dir=cache)
+    assert destino == ffmpeg_path(tmp_path / "bin")
+    assert destino.read_bytes() == BINARIO
+    assert len(chamadas) == 1
+    assert [p.read_bytes() for p in cache.iterdir()] == [BINARIO]
+    assert [p.name for p in destino.parent.iterdir()] == [destino.name]
+
+
+def test_download_ffmpeg_reaproveita_o_cache_cujo_hash_bate(tmp_path, monkeypatch):
+    _fixar_binario_falso(monkeypatch)
+    cache = tmp_path / "cache"
+    monkeypatch.setattr("gifc.tools._baixar_zip", lambda *a, **k: BINARIO)
+    download_ffmpeg(tmp_path / "bin1", cache_dir=cache)
+
+    def _proibido(*a, **k):
+        raise AssertionError("rebaixou apesar do cache válido")
+    monkeypatch.setattr("gifc.tools._baixar_zip", _proibido)
+    destino = download_ffmpeg(tmp_path / "bin2", cache_dir=cache)
+    assert destino.read_bytes() == BINARIO
+
+
+def test_download_ffmpeg_ignora_cache_corrompido_e_rebaixa(tmp_path, monkeypatch):
+    _fixar_binario_falso(monkeypatch)
+    cache = tmp_path / "cache"
+    monkeypatch.setattr("gifc.tools._baixar_zip", lambda *a, **k: BINARIO)
+    download_ffmpeg(tmp_path / "bin1", cache_dir=cache)
+    (arquivo,) = cache.iterdir()
+    arquivo.write_bytes(b"x" * len(BINARIO))  # mesmo tamanho, outro conteúdo
+
+    chamadas = []
+    monkeypatch.setattr("gifc.tools._baixar_zip",
+                        lambda *a, **k: chamadas.append(a) or BINARIO)
+    destino = download_ffmpeg(tmp_path / "bin2", cache_dir=cache)
+    assert len(chamadas) == 1
+    assert arquivo.read_bytes() == BINARIO  # o cache foi refeito
+    assert destino.read_bytes() == BINARIO
+
+
+def test_download_ffmpeg_nao_guarda_no_cache_um_download_recusado(tmp_path, monkeypatch):
+    _fixar_binario_falso(monkeypatch)
+
+    def _falha(*a, **k):
+        raise DownloadError("hash errado")
+    monkeypatch.setattr("gifc.tools._baixar_zip", _falha)
+    cache = tmp_path / "cache"
+    with pytest.raises(DownloadError):
+        download_ffmpeg(tmp_path / "bin", cache_dir=cache)
+    assert not cache.exists() or list(cache.iterdir()) == []
+    assert not ffmpeg_path(tmp_path / "bin").exists()
+
+
+def test_download_ffmpeg_falha_do_cache_nao_impede_a_instalacao(tmp_path, monkeypatch):
+    _fixar_binario_falso(monkeypatch)
+    monkeypatch.setattr("gifc.tools._baixar_zip", lambda *a, **k: BINARIO)
+    bloqueio = tmp_path / "cache"
+    bloqueio.write_bytes(b"sou um arquivo, nao uma pasta")
+    destino = download_ffmpeg(tmp_path / "bin", cache_dir=bloqueio)
+    assert destino.read_bytes() == BINARIO
+
+
+@pytest.mark.integration
+def test_download_real_do_ffmpeg(tmp_path):
+    destino = download_ffmpeg(tmp_path / "bin", cache_dir=PROJECT_ROOT / "build" / "cache-de-pacotes")
+    assert destino.stat().st_size == FFMPEG_SIZE
+    assert [p.name for p in destino.parent.iterdir()] == [destino.name]
 
 
 # --- busca com precedência de bundle -------------------------------------

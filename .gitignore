@@ -16,3 +16,6 @@ venv/
 
 # Scratch do subagent-driven-development
 .superpowers/
+
+# Zips baixados em cache pelo build
+build/

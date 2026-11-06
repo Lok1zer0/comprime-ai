@@ -38,6 +38,23 @@ OXIPNG_URL = (
 OXIPNG_ZIP_SIZE = 497_302
 OXIPNG_SHA256 = "7e940f83ee46874b73f53031f96a15834cb70b220af27391fb06fe7b4dd798e1"
 
+# ffmpeg (build LGPL da BtbN, versão 9.0). O binário é espelhado nos releases
+# deste projeto (tag `ferramentas-v1`, com a procedência e o aviso LGPL no
+# corpo) e NÃO baixado direto da BtbN: ela apaga autobuilds antigos, e a URL
+# anterior, fixada numa tag datada, morreu em menos de quatro semanas. O
+# espelho mantém o build reproduzível. Não aponte de volta para o upstream.
+# É o `ffmpeg.exe` puro, sem zip: ffprobe e ffplay ficam de fora de propósito.
+FFMPEG_URL = (
+    "https://github.com/Lok1zer0/comprime-ai/releases/download/"
+    "ferramentas-v1/ffmpeg.exe"
+)
+FFMPEG_SIZE = 132_290_560
+FFMPEG_SHA256 = "b0429a63ce777566bd65e8b267813a547e8df9df3a4865d769460f2e0fbab535"
+
+# Downloads já verificados, fora do git (`build/` é ignorado), para que um
+# build limpo não retransfira os 132 MB do ffmpeg.
+CACHE_DIR = PROJECT_ROOT / "build" / "cache-de-pacotes"
+
 
 class MissingToolError(Exception):
     """Uma ferramenta externa obrigatória não foi encontrada."""
@@ -80,6 +97,11 @@ def gifsicle_path(bin_dir: Path) -> Path:
 def oxipng_path(bin_dir: Path) -> Path:
     """Caminho onde o oxipng portátil fica dentro da pasta do app."""
     return bin_dir / _nome_exe("oxipng")
+
+
+def ffmpeg_path(bin_dir: Path) -> Path:
+    """Caminho onde o ffmpeg portátil fica dentro da pasta do app."""
+    return bin_dir / _nome_exe("ffmpeg")
 
 
 def dirs_de_busca(bin_dir: Path) -> list[Path]:
@@ -246,3 +268,50 @@ def download_oxipng(
         "oxipng", OXIPNG_URL, OXIPNG_ZIP_SIZE, OXIPNG_SHA256, on_progress
     )
     return extract_oxipng(dados, bin_dir)
+
+
+def _binario_em_cache(arquivo: Path, tamanho: int, sha256: str) -> bytes | None:
+    """O conteúdo do binário em cache, ou None se faltar ou não bater o hash."""
+    try:
+        if arquivo.stat().st_size != tamanho:
+            return None
+        dados = arquivo.read_bytes()
+    except OSError:
+        return None
+    return dados if hashlib.sha256(dados).hexdigest() == sha256 else None
+
+
+def _gravar_atomico(destino: Path, dados: bytes) -> None:
+    parcial = destino.with_suffix(".parcial")
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    parcial.write_bytes(dados)
+    parcial.replace(destino)
+
+
+def download_ffmpeg(
+    bin_dir: Path = BIN_DIR,
+    on_progress: Callable[[int, int], None] | None = None,
+    cache_dir: Path = CACHE_DIR,
+) -> Path:
+    """Baixa o ffmpeg LGPL para `bin_dir` e devolve o caminho do exe.
+
+    O binário verificado fica em `cache_dir` e é reaproveitado enquanto o
+    hash bater; um cache truncado ou adulterado é descartado e rebaixado.
+    Só um download que passou na conferência chega a ser gravado no cache.
+    """
+    arquivo = cache_dir / f"ffmpeg-{FFMPEG_SHA256[:12]}.exe"
+    dados = _binario_em_cache(arquivo, FFMPEG_SIZE, FFMPEG_SHA256)
+    if dados is None:
+        dados = _baixar_zip(
+            "ffmpeg", FFMPEG_URL, FFMPEG_SIZE, FFMPEG_SHA256, on_progress
+        )
+        try:
+            _gravar_atomico(arquivo, dados)
+        except OSError:
+            pass  # sem cache o build só fica mais lento; não é falha
+    destino = ffmpeg_path(bin_dir)
+    try:
+        _gravar_atomico(destino, dados)
+    except OSError as exc:
+        raise DownloadError(f"Não foi possível gravar {destino}: {exc}") from exc
+    return destino
