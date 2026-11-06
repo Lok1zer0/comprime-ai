@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import shutil
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
@@ -26,6 +27,40 @@ from gifc.search import (
 from gifc.tools import Tools
 
 SUFIXO = "_comprimido"
+
+
+@dataclass(frozen=True)
+class Alvo:
+    """O que o usuário quer: um tamanho fixo ou uma fração de cada entrada.
+
+    Um alvo relativo depende do arquivo, então quem chama não consegue
+    transformá-lo em bytes antes de o arquivo ser medido: `compress_file`
+    chama `bytes_para` depois do `probe`, e é esse número que vale dali em
+    diante (limite da busca, piso e `hit_target`).
+    """
+
+    modo: str  # "absoluto" (bytes) ou "relativo" (percentual da entrada)
+    valor: float
+
+    @classmethod
+    def absoluto(cls, bytes_: int) -> Alvo:
+        if bytes_ <= 0:
+            raise ValueError("O alvo deve ser maior que zero.")
+        return cls("absoluto", bytes_)
+
+    @classmethod
+    def relativo(cls, pct: float) -> Alvo:
+        # `not (0 < pct <= 100)` também recusa NaN, que falha toda comparação.
+        if not (0 < pct <= 100):
+            raise ValueError("O percentual deve estar entre 0 e 100.")
+        return cls("relativo", float(pct))
+
+    def bytes_para(self, tamanho_original: int) -> int:
+        """O alvo em bytes para uma entrada de `tamanho_original` bytes."""
+        if self.modo == "absoluto":
+            return int(self.valor)
+        # Nunca 0: um alvo de zero byte não cabe em nada.
+        return max(1, math.floor(tamanho_original * self.valor / 100))
 
 
 class CompressError(Exception):
@@ -243,14 +278,17 @@ def medir_conservadores(
 
 def compress_file(
     src: Path,
-    target_bytes: int,
+    alvo: Alvo,
     toggles: Toggles,
     tools: Tools,
     converter_webp: bool = False,
     on_progress: ProgressFn | None = None,
     should_cancel: CancelFn | None = None,
 ) -> CompressResult:
-    """Comprime `src` buscando o melhor resultado que cabe em `target_bytes`.
+    """Comprime `src` buscando o melhor resultado que cabe em `alvo`.
+
+    `alvo` é resolvido aqui, depois de medir a entrada: um alvo relativo vale
+    por arquivo. Tudo abaixo trabalha com os bytes já resolvidos.
 
     Com `converter_webp`, um PNG ou JPEG percorre a escada de WebP. Se nenhum
     degrau ficar menor que a entrada o original é copiado, e então
@@ -259,6 +297,7 @@ def compress_file(
     """
     src = Path(src)
     info = probe(src)
+    target_bytes = alvo.bytes_para(info.size_bytes)
 
     saida = formatos.formato_de_saida(info.formato, converter_webp)
     modulo = formatos.para(saida)

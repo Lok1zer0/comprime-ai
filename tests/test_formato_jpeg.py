@@ -15,7 +15,7 @@ from PIL import (
 )
 
 from gifc import formatos
-from gifc.compress import compress_file
+from gifc.compress import Alvo, compress_file
 from gifc.formatos.base import EncodeError
 from gifc.formatos.jpeg import NEUTROS, SENTIDOS, TABELA, Params, codificar
 from gifc.ladder import Toggles, aplicar_toggles, target_width
@@ -448,7 +448,7 @@ def test_nunca_modifica_o_original(tmp_path):
     for indice in (0, 4, 11):
         codificar(src, tmp_path / f"s{indice}.jpg", TABELA[indice], info,
                   SEM_FERRAMENTAS)
-    compress_file(src, src.stat().st_size // 3, TODOS, SEM_FERRAMENTAS)
+    compress_file(src, Alvo.absoluto(src.stat().st_size // 3), TODOS, SEM_FERRAMENTAS)
     assert _sha(src) == antes
 
 
@@ -499,7 +499,7 @@ def test_jpeg_com_varias_imagens_codifica_so_a_primaria(tmp_path):
 def test_compress_file_encaixa_foto_num_alvo_apertado(tmp_path):
     src = _foto(tmp_path / "foto.jpg", qualidade=95)
     alvo = src.stat().st_size // 4
-    r = compress_file(src, alvo, TODOS, SEM_FERRAMENTAS)
+    r = compress_file(src, Alvo.absoluto(alvo), TODOS, SEM_FERRAMENTAS)
     assert r.hit_target is True
     assert r.final_bytes <= alvo
     assert r.dst.suffix == ".jpg"

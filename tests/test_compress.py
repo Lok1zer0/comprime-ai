@@ -1,3 +1,4 @@
+import dataclasses
 import random
 import subprocess
 from pathlib import Path
@@ -6,7 +7,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from gifc import formatos
-from gifc.compress import CompressResult, compress_file, unique_output_path
+from gifc.compress import Alvo, CompressResult, compress_file, unique_output_path
 from gifc.formatos import gif as formato_gif
 from gifc.formatos import webp as formato_webp
 from gifc.formatos.base import EncodeError
@@ -68,7 +69,7 @@ def test_degrau_que_falha_e_pulado(tmp_path, monkeypatch):
 
     monkeypatch.setattr(formato_gif, "codificar", encode_falho)
 
-    r = mod.compress_file(src, 1_800, TODOS, tools)
+    r = mod.compress_file(src, Alvo.absoluto(1_800), TODOS, tools)
 
     assert any(i % 2 == 0 for i in tentados), "nenhum degrau falho foi exercido"
     assert r.dst.is_file()
@@ -99,7 +100,7 @@ def test_encode_fn_tenta_de_novo_apos_falha_transitoria_no_mesmo_degrau(
 
     monkeypatch.setattr(formato_gif, "codificar", encode_falha_uma_vez)
 
-    r = mod.compress_file(src, 1_800, TODOS, tools)
+    r = mod.compress_file(src, Alvo.absoluto(1_800), TODOS, tools)
 
     assert chamadas_por_indice[9] == 2, "o degrau 9 deveria ter sido tentado 2 vezes"
     assert not any(a.index == 9 and a.erro is not None for a in r.attempts), (
@@ -124,7 +125,7 @@ def test_encode_fn_desiste_apos_falhar_duas_vezes_seguidas_no_mesmo_degrau(
 
     monkeypatch.setattr(formato_gif, "codificar", encode_sempre_falha_no_indice_9)
 
-    r = mod.compress_file(src, 1_800, TODOS, tools)
+    r = mod.compress_file(src, Alvo.absoluto(1_800), TODOS, tools)
 
     assert chamadas_por_indice[9] == 2, "deve tentar exatamente 2x antes de desistir"
     tentativa_9 = next(a for a in r.attempts if a.index == 9)
@@ -151,7 +152,7 @@ def test_todos_os_degraus_falhando_levanta_erro(tmp_path, monkeypatch):
     monkeypatch.setattr(formato_gif, "codificar", sempre_falha)
 
     with pytest.raises(mod.CompressError):
-        mod.compress_file(src, 1_000, TODOS, tools)
+        mod.compress_file(src, Alvo.absoluto(1_000), TODOS, tools)
 
     assert caminhos_criados, "mkdtemp nunca foi chamado"
     assert not caminhos_criados[0].exists(), (
@@ -170,7 +171,7 @@ def test_ja_otimizado_copia_o_original(tmp_path, monkeypatch):
 
     monkeypatch.setattr(formato_gif, "codificar", encode_maior)
 
-    r = mod.compress_file(src, 10_000, TODOS, tools)
+    r = mod.compress_file(src, Alvo.absoluto(10_000), TODOS, tools)
 
     assert r.already_optimized is True
     assert r.params is None
@@ -198,7 +199,7 @@ def test_ja_otimizado_hit_target_usa_o_tamanho_original(
 
     monkeypatch.setattr(formato_gif, "codificar", encode_maior)
 
-    r = mod.compress_file(src, target_bytes, TODOS, tools)
+    r = mod.compress_file(src, Alvo.absoluto(target_bytes), TODOS, tools)
 
     assert r.already_optimized is True
     assert r.hit_target is esperado
@@ -234,7 +235,7 @@ def test_ja_otimizado_hit_target_discrimina_original_de_tentativa(tmp_path, monk
 
     monkeypatch.setattr(formato_gif, "codificar", encode_maior)
 
-    r = mod.compress_file(src, alvo, TODOS, tools)
+    r = mod.compress_file(src, Alvo.absoluto(alvo), TODOS, tools)
 
     assert r.already_optimized is True
     # Só é True se hit_target foi calculado contra o tamanho do ORIGINAL.
@@ -254,7 +255,7 @@ def test_ja_otimizado_dispara_em_empate_exato(tmp_path, monkeypatch):
 
     monkeypatch.setattr(formato_gif, "codificar", encode_igual)
 
-    r = mod.compress_file(src, 10_000, TODOS, tools)
+    r = mod.compress_file(src, Alvo.absoluto(10_000), TODOS, tools)
 
     assert r.already_optimized is True
 
@@ -271,7 +272,7 @@ def test_sem_gifsicle_descarta_a_coluna_lossy(tmp_path, monkeypatch):
 
     monkeypatch.setattr(formato_gif, "codificar", encode_ok)
     # alvo abaixo da entrada (5.006 B): acima dela nada seria codificado
-    mod.compress_file(src, 4_000, TODOS, tools)
+    mod.compress_file(src, Alvo.absoluto(4_000), TODOS, tools)
 
     assert vistos
     assert all(p.lossy == 0 for p in vistos)
@@ -282,7 +283,7 @@ def test_comprime_e_atinge_alvo_generoso(tools, gif_pequeno, tmp_path):
     copia = tmp_path / "entrada.gif"
     copia.write_bytes(gif_pequeno.read_bytes())
 
-    r = compress_file(copia, target_bytes=10_000_000, toggles=TODOS, tools=tools)
+    r = compress_file(copia, Alvo.absoluto(10_000_000), toggles=TODOS, tools=tools)
 
     assert isinstance(r, CompressResult)
     assert r.hit_target is True
@@ -301,7 +302,7 @@ def test_alvo_folgado_so_aplica_o_degrau_zero_num_gif(tools, tmp_path):
          "testsrc2=size=320x240:rate=15:duration=2", "-t", "2", str(src)],
         check=True, capture_output=True,
     )
-    r = compress_file(src, target_bytes=10_000_000, toggles=TODOS, tools=tools)
+    r = compress_file(src, Alvo.absoluto(10_000_000), toggles=TODOS, tools=tools)
 
     assert r.already_optimized is False
     assert r.params == formato_gif.TABELA[0]
@@ -316,7 +317,7 @@ def test_alvo_folgado_so_aplica_o_degrau_zero_num_jpeg(tmp_path):
     src = tmp_path / "foto.jpg"
     _textura((640, 480)).save(src, "JPEG", quality=95)
 
-    r = compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS)
+    r = compress_file(src, Alvo.absoluto(10_000_000), TODOS, SEM_FERRAMENTAS)
 
     assert r.already_optimized is False
     assert r.params == formato_jpeg.TABELA[0]            # q92, subamostragem da fonte
@@ -332,7 +333,7 @@ def test_alvo_logo_abaixo_da_entrada_nao_sacrifica_resolucao_nem_framerate(
     copia.write_bytes(gif_pequeno.read_bytes())
 
     r = compress_file(
-        copia, target_bytes=copia.stat().st_size - 1, toggles=TODOS, tools=tools
+        copia, Alvo.absoluto(copia.stat().st_size - 1), toggles=TODOS, tools=tools
     )
 
     # Folgado o bastante para o degrau 0: não deve sacrificar o resto.
@@ -347,7 +348,7 @@ def test_nunca_modifica_o_original(tools, gif_pequeno, tmp_path):
     copia.write_bytes(gif_pequeno.read_bytes())
     antes = copia.read_bytes()
 
-    compress_file(copia, target_bytes=1_000, toggles=TODOS, tools=tools)
+    compress_file(copia, Alvo.absoluto(1_000), toggles=TODOS, tools=tools)
 
     assert copia.read_bytes() == antes
 
@@ -357,7 +358,7 @@ def test_alvo_impossivel_entrega_o_menor_e_avisa(tools, gif_pequeno, tmp_path):
     copia = tmp_path / "entrada.gif"
     copia.write_bytes(gif_pequeno.read_bytes())
 
-    r = compress_file(copia, target_bytes=1, toggles=TODOS, tools=tools)
+    r = compress_file(copia, Alvo.absoluto(1), toggles=TODOS, tools=tools)
 
     assert r.hit_target is False
     assert r.dst.is_file()
@@ -369,7 +370,7 @@ def test_nao_deixa_temporarios_para_tras(tools, gif_pequeno, tmp_path):
     copia = tmp_path / "entrada.gif"
     copia.write_bytes(gif_pequeno.read_bytes())
 
-    r = compress_file(copia, target_bytes=10_000_000, toggles=TODOS, tools=tools)
+    r = compress_file(copia, Alvo.absoluto(10_000_000), toggles=TODOS, tools=tools)
 
     restantes = {p.name for p in tmp_path.iterdir()}
     assert restantes == {copia.name, r.dst.name}
@@ -478,7 +479,7 @@ def test_comprime_cada_formato(formato, tmp_path, request):
         else SEM_FERRAMENTAS
     )
 
-    r = compress_file(src, alvo, TODOS, ferramentas)
+    r = compress_file(src, Alvo.absoluto(alvo), TODOS, ferramentas)
 
     assert r.formato_entrada is formato
     assert r.formato_saida is formato
@@ -505,7 +506,7 @@ def test_extensao_da_saida_segue_o_formato_de_saida(entrada, tmp_path, request):
     antes = src.read_bytes()
 
     r = compress_file(
-        src, src.stat().st_size // 2, TODOS, SEM_FERRAMENTAS, converter_webp=True,
+        src, Alvo.absoluto(src.stat().st_size // 2), TODOS, SEM_FERRAMENTAS, converter_webp=True,
     )
 
     assert r.formato_entrada is entrada
@@ -527,7 +528,7 @@ def test_converter_webp_nao_afeta_gif(tools, gif_pequeno, tmp_path):
     copia.write_bytes(gif_pequeno.read_bytes())
 
     r = compress_file(
-        copia, copia.stat().st_size // 2, TODOS, tools, converter_webp=True
+        copia, Alvo.absoluto(copia.stat().st_size // 2), TODOS, tools, converter_webp=True
     )
 
     assert r.formato_entrada is Formato.GIF
@@ -549,7 +550,7 @@ def test_converter_webp_so_vale_para_png_e_jpeg(tmp_path, monkeypatch, entrada):
 
     # alvo abaixo da entrada (5.000 B): acima dela só o sem perda é medido
     r = mod.compress_file(
-        src, 4_000, TODOS, Tools("ffmpeg", "ffprobe", "gifsicle"),
+        src, Alvo.absoluto(4_000), TODOS, Tools("ffmpeg", "ffprobe", "gifsicle"),
         converter_webp=True,
     )
 
@@ -564,7 +565,7 @@ def test_resultado_carrega_os_dois_formatos(tmp_path, monkeypatch, entrada):
     vistos_webp = _webp_falso(monkeypatch, 100)
 
     convertido = mod.compress_file(
-        src, 1_000_000, TODOS, SEM_FERRAMENTAS, converter_webp=True,
+        src, Alvo.absoluto(1_000_000), TODOS, SEM_FERRAMENTAS, converter_webp=True,
     )
     assert convertido.formato_entrada is entrada
     assert convertido.formato_saida is Formato.WEBP
@@ -575,7 +576,7 @@ def test_resultado_carrega_os_dois_formatos(tmp_path, monkeypatch, entrada):
     modulo = formatos.para(entrada)
     falso, vistos = _codificador_falso(100)
     monkeypatch.setattr(modulo, "codificar", falso)
-    mesmo = mod.compress_file(src, 4_000, TODOS, SEM_FERRAMENTAS)
+    mesmo = mod.compress_file(src, Alvo.absoluto(4_000), TODOS, SEM_FERRAMENTAS)
     assert mesmo.formato_entrada is entrada
     assert mesmo.formato_saida is entrada
     assert mesmo.dst.suffix == formatos.extensao(entrada)
@@ -591,7 +592,7 @@ def test_conversao_usa_os_neutros_do_webp_e_nao_os_da_entrada(
     vistos = _webp_falso(monkeypatch, 100)
 
     mod.compress_file(
-        src, 1_000_000, Toggles(True, True, False, True), SEM_FERRAMENTAS,
+        src, Alvo.absoluto(1_000_000), Toggles(True, True, False, True), SEM_FERRAMENTAS,
         converter_webp=True,
     )
 
@@ -613,7 +614,7 @@ def test_sem_ganho_a_conversao_devolve_o_original_e_diz_a_verdade(
     mod, src, info = _preparar_formato(tmp_path, monkeypatch, entrada)
     _webp_falso(monkeypatch, info.size_bytes + 500)
 
-    r = mod.compress_file(src, 10_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = mod.compress_file(src, Alvo.absoluto(10_000), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert r.already_optimized is True
     assert r.formato_entrada is entrada
@@ -628,7 +629,7 @@ def test_com_ganho_a_conversao_reporta_webp(tmp_path, monkeypatch):
     mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
     _webp_falso(monkeypatch, info.size_bytes - 500)
 
-    r = mod.compress_file(src, 10_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = mod.compress_file(src, Alvo.absoluto(10_000), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert r.already_optimized is False
     assert r.formato_saida is Formato.WEBP
@@ -642,7 +643,7 @@ def test_empate_exato_na_conversao_tambem_devolve_o_original(
     mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
     _webp_falso(monkeypatch, info.size_bytes)
 
-    r = mod.compress_file(src, 10_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = mod.compress_file(src, Alvo.absoluto(10_000), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert r.already_optimized is True
     assert r.formato_saida is Formato.PNG
@@ -661,7 +662,7 @@ def test_conversao_sem_ganho_nao_deixa_tmpdir_nem_webp(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod.tempfile, "mkdtemp", espiao)
 
-    r = mod.compress_file(src, 10_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = mod.compress_file(src, Alvo.absoluto(10_000), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert criados and not criados[0].exists()
     assert {p.name for p in tmp_path.iterdir()} == {src.name, r.dst.name}
@@ -708,7 +709,7 @@ def test_conversao_pedida_com_alvo_folgado_percorre_a_escada_inteira(
     assert alvo >= info.size_bytes
     codificados = _curva_falsa(monkeypatch, formato_webp, WEBP_FOTO)
 
-    r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = mod.compress_file(src, Alvo.absoluto(alvo), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert len(codificados) > 1                      # foi além do degrau 0
     assert r.already_optimized is False
@@ -728,7 +729,7 @@ def test_mesmo_formato_com_alvo_folgado_so_considera_o_degrau_zero(
     assert alvo >= info.size_bytes
     codificados = _curva_falsa(monkeypatch, formato_webp, WEBP_FOTO)
 
-    r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS)
+    r = mod.compress_file(src, Alvo.absoluto(alvo), TODOS, SEM_FERRAMENTAS)
 
     assert codificados == [0]
     assert r.already_optimized is True and r.params is None
@@ -745,7 +746,7 @@ def test_entrada_que_ja_cabe_usa_o_sem_perda_quando_ele_encolhe(
     mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
     codificados = _curva_falsa(monkeypatch, formato_webp, WEBP_FLAT)
 
-    r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = mod.compress_file(src, Alvo.absoluto(alvo), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert codificados == [0]      # nenhum com perda, mesmo havendo ganho maior
     assert r.already_optimized is False
@@ -764,7 +765,7 @@ def test_png_ja_otimizado_nao_e_quantizado_para_economizar_um_pouco(
     tamanhos = [4_900, 4_850, 5_068, 2_641, 3_323, 2_259, 2_000, 1_900, 1_800, 1_700]
     codificados = _curva_falsa(monkeypatch, formato_png, tamanhos)
 
-    r = mod.compress_file(src, 10_000_000, TODOS, COM_OXIPNG)
+    r = mod.compress_file(src, Alvo.absoluto(10_000_000), TODOS, COM_OXIPNG)
 
     assert codificados == [0, 1]
     assert r.params == formato_png.TABELA[1]   # o MENOR do prefixo, não o primeiro
@@ -778,7 +779,7 @@ def test_png_sem_oxipng_so_codifica_um_degrau_sem_perda(tmp_path, monkeypatch):
     mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
     codificados = _curva_falsa(monkeypatch, formato_png, [5_000] * 10)
 
-    r = mod.compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS)
+    r = mod.compress_file(src, Alvo.absoluto(10_000_000), TODOS, SEM_FERRAMENTAS)
 
     assert codificados == [0]
     assert r.already_optimized is True
@@ -797,7 +798,7 @@ def test_formato_sem_prefixo_so_tenta_o_degrau_zero_se_ja_cabe(
     monkeypatch.setattr(modulo, "codificar", falso)
 
     r = mod.compress_file(
-        src, 10_000_000, TODOS, Tools("ffmpeg", "ffprobe", "gifsicle")
+        src, Alvo.absoluto(10_000_000), TODOS, Tools("ffmpeg", "ffprobe", "gifsicle")
     )
 
     assert vistos == [modulo.TABELA[0]]
@@ -816,7 +817,7 @@ def test_formato_sem_prefixo_devolve_o_original_se_o_degrau_zero_nao_encolhe(
     monkeypatch.setattr(modulo, "codificar", falso)
 
     r = mod.compress_file(
-        src, 10_000_000, TODOS, Tools("ffmpeg", "ffprobe", "gifsicle")
+        src, Alvo.absoluto(10_000_000), TODOS, Tools("ffmpeg", "ffprobe", "gifsicle")
     )
 
     assert vistos == [modulo.TABELA[0]]
@@ -844,7 +845,7 @@ def test_entrada_que_ja_cabe_com_todos_os_degraus_sem_perda_falhando_e_erro(
     monkeypatch.setattr(formato_webp, "codificar", quebrado)
 
     with pytest.raises(mod.CompressError):
-        mod.compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+        mod.compress_file(src, Alvo.absoluto(10_000_000), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
 
 def test_entrada_que_ja_cabe_um_degrau_sem_perda_falho_nao_derruba_o_outro(
@@ -860,7 +861,7 @@ def test_entrada_que_ja_cabe_um_degrau_sem_perda_falho_nao_derruba_o_outro(
 
     monkeypatch.setattr(formato_png, "codificar", falso)
 
-    r = mod.compress_file(src, 10_000_000, TODOS, COM_OXIPNG)
+    r = mod.compress_file(src, Alvo.absoluto(10_000_000), TODOS, COM_OXIPNG)
 
     assert r.params == formato_png.TABELA[1] and r.final_bytes == 4_000
     assert next(a for a in r.attempts if a.index == 0).erro == "oxipng falhou"
@@ -874,7 +875,7 @@ def test_entrada_que_ja_cabe_respeita_o_cancelamento(tmp_path, monkeypatch):
 
     with pytest.raises(Cancelled):
         mod.compress_file(
-            src, 10_000_000, TODOS, SEM_FERRAMENTAS, converter_webp=True,
+            src, Alvo.absoluto(10_000_000), TODOS, SEM_FERRAMENTAS, converter_webp=True,
             should_cancel=lambda: True,
         )
     assert codificados == []
@@ -887,7 +888,7 @@ def test_entrada_um_byte_acima_do_alvo_percorre_a_escada(tmp_path, monkeypatch):
     codificados = _curva_falsa(monkeypatch, formato_webp, WEBP_FOTO)
     alvo = info.size_bytes - 1
 
-    r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = mod.compress_file(src, Alvo.absoluto(alvo), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert codificados[0] == 0 and len(codificados) > 1
     assert r.already_optimized is False
@@ -905,7 +906,7 @@ def test_alvo_abaixo_da_entrada_acha_o_de_maior_qualidade_numa_curva_irregular(
     tamanhos = [9_000, 8_000, 7_000, 3_800, 4_300, 3_000, 2_900, 2_000, 1_800, 1_500, 1_000]
     _curva_falsa(monkeypatch, formato_webp, tamanhos)
 
-    r = mod.compress_file(src, 3_900, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = mod.compress_file(src, Alvo.absoluto(3_900), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert r.params == formato_webp.TABELA[3] and r.hit_target is True
 
@@ -919,7 +920,7 @@ def test_alvo_abaixo_da_entrada_segue_inalterado(tmp_path, monkeypatch):
         i for i in range(len(formato_webp.TABELA)) if 6_000 - 500 * i <= alvo
     )
 
-    r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = mod.compress_file(src, Alvo.absoluto(alvo), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert r.params == formato_webp.TABELA[esperado]
     assert r.final_bytes <= alvo and r.hit_target is True
@@ -932,7 +933,7 @@ def test_alvo_abaixo_da_entrada_e_inatingivel_continua_sem_atingir(
     mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.JPEG)
     _tamanho_pelo_degrau(monkeypatch, base=4_900, passo=10)
 
-    r = mod.compress_file(src, 100, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = mod.compress_file(src, Alvo.absoluto(100), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert r.already_optimized is False
     assert r.hit_target is False
@@ -950,7 +951,7 @@ def test_entrada_minuscula_cai_em_ja_otimizado_sem_quebrar(tmp_path, monkeypatch
     ))
     _webp_falso(monkeypatch, 30)
 
-    r = mod.compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS,
+    r = mod.compress_file(src, Alvo.absoluto(10_000_000), TODOS, SEM_FERRAMENTAS,
                           converter_webp=True)
 
     assert r.already_optimized is True
@@ -969,7 +970,7 @@ def test_png_ja_otimizado_pela_ferramenta_nao_e_quantizado_de_novo(tools, tmp_pa
     src = tmp_path / "degrade.png"
     degrade().save(src, "PNG", optimize=True)
 
-    r = compress_file(src, 10_000_000, TODOS, tools)
+    r = compress_file(src, Alvo.absoluto(10_000_000), TODOS, tools)
 
     assert r.hit_target is True
     assert r.already_optimized or (
@@ -989,7 +990,7 @@ def test_foto_com_conversao_e_alvo_folgado_converte_de_verdade(tmp_path):
     _textura((640, 480)).save(src, "JPEG", quality=95)
     original = src.stat().st_size
 
-    r = compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = compress_file(src, Alvo.absoluto(10_000_000), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert r.already_optimized is False and r.hit_target is True
     assert r.formato_saida is Formato.WEBP and r.dst.suffix == ".webp"
@@ -1005,7 +1006,7 @@ def test_foto_com_conversao_e_alvo_apertado_reduz_de_verdade(tmp_path):
     _textura((640, 480)).save(src, "JPEG", quality=95)
     original = src.stat().st_size
 
-    r = compress_file(src, original * 8 // 10, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = compress_file(src, Alvo.absoluto(original * 8 // 10), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert r.already_optimized is False
     assert r.formato_saida is Formato.WEBP and r.dst.suffix == ".webp"
@@ -1019,7 +1020,7 @@ def test_webp_com_perda_e_alvo_folgado_nao_e_reencodado(tmp_path):
     _textura((640, 480)).save(src, "WEBP", quality=95)
     original = src.read_bytes()
 
-    r = compress_file(src, 10_000_000, TODOS, SEM_FERRAMENTAS)
+    r = compress_file(src, Alvo.absoluto(10_000_000), TODOS, SEM_FERRAMENTAS)
 
     assert r.already_optimized is True and r.hit_target is True
     assert r.dst.read_bytes() == original
@@ -1031,7 +1032,7 @@ def test_webp_com_alvo_apertado_e_sem_conversao_reduz_de_verdade(tmp_path):
     _textura((640, 480)).save(src, "WEBP", quality=95)
     original = src.stat().st_size
 
-    r = compress_file(src, original * 8 // 10, TODOS, SEM_FERRAMENTAS)
+    r = compress_file(src, Alvo.absoluto(original * 8 // 10), TODOS, SEM_FERRAMENTAS)
 
     assert r.already_optimized is False
     assert r.formato_saida is Formato.WEBP
@@ -1086,7 +1087,7 @@ def test_webp_degrau_sem_perda_menor_que_os_com_perda_e_escolhido(
     alvo = 4_000
     assert alvo < info.size_bytes - 1   # fora do regime de alvo folgado
 
-    r = mod.compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = mod.compress_file(src, Alvo.absoluto(alvo), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert r.params == formato_webp.TABELA[0]
     assert r.final_bytes == 100 and r.hit_target is True
@@ -1100,7 +1101,7 @@ def test_prefixo_nao_cabendo_a_cauda_ainda_e_bisectada(tmp_path, monkeypatch):
     tamanhos = [4_500, 9_000, 8_000, 7_000, 6_000, 5_500, 5_200, 4_000, 3_500, 3_000, 2_000]
     codificados = _curva_falsa(monkeypatch, formato_webp, tamanhos)
 
-    r = mod.compress_file(src, 4_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = mod.compress_file(src, Alvo.absoluto(4_000), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert codificados[0] == 0   # o prefixo vem antes da cauda
     assert r.params == formato_webp.TABELA[7]
@@ -1115,7 +1116,7 @@ def test_o_menor_indice_entre_prefixo_e_cauda_vence(tmp_path, monkeypatch):
     tamanhos = [4_900, 3_900, 3_800, 3_000, 2_500, 2_000, 1_500, 1_200, 1_000, 900]
     codificados = _curva_falsa(monkeypatch, formato_png, tamanhos)
 
-    r = mod.compress_file(src, 4_000, TODOS, COM_OXIPNG)
+    r = mod.compress_file(src, Alvo.absoluto(4_000), TODOS, COM_OXIPNG)
 
     assert r.params == formato_png.TABELA[1]
     assert r.final_bytes == 3_900
@@ -1127,7 +1128,7 @@ def test_primeiro_degrau_do_prefixo_que_cabe_dispensa_o_resto(tmp_path, monkeypa
     tamanhos = [3_900, 3_000, 3_800, 3_000, 2_500, 2_000, 1_500, 1_200, 1_000, 900]
     codificados = _curva_falsa(monkeypatch, formato_png, tamanhos)
 
-    r = mod.compress_file(src, 4_000, TODOS, COM_OXIPNG)
+    r = mod.compress_file(src, Alvo.absoluto(4_000), TODOS, COM_OXIPNG)
 
     assert r.params == formato_png.TABELA[0]
     assert codificados == [0]
@@ -1147,7 +1148,7 @@ def test_png_tem_inversoes_na_curva_e_o_prefixo_as_cobre(tmp_path, monkeypatch):
     tamanhos = [4_550, 4_550, 5_068, 2_641, 3_323, 2_259, 2_000, 1_900, 1_800, 1_700]
     _curva_falsa(monkeypatch, formato_png, tamanhos)
 
-    r = mod.compress_file(src, 3_000, TODOS, COM_OXIPNG)
+    r = mod.compress_file(src, Alvo.absoluto(3_000), TODOS, COM_OXIPNG)
 
     assert r.params == formato_png.TABELA[3]
 
@@ -1166,7 +1167,7 @@ def test_degrau_do_prefixo_que_falha_nao_derruba_a_busca(tmp_path, monkeypatch):
 
     monkeypatch.setattr(formato_webp, "codificar", falso)
 
-    r = mod.compress_file(src, 4_000, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = mod.compress_file(src, Alvo.absoluto(4_000), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert chamadas[0] == 2          # a falha transitória ainda ganha a segunda chance
     assert r.hit_target is True and r.final_bytes <= 4_000
@@ -1183,7 +1184,7 @@ def test_progresso_traz_indices_da_escada_inteira(tmp_path, monkeypatch):
     vistos: list[tuple[int, int]] = []
 
     r = mod.compress_file(
-        src, 4_000, TODOS, SEM_FERRAMENTAS, converter_webp=True,
+        src, Alvo.absoluto(4_000), TODOS, SEM_FERRAMENTAS, converter_webp=True,
         on_progress=lambda a, total: vistos.append((a.index, total)),
     )
 
@@ -1202,7 +1203,7 @@ def test_cancelamento_vale_no_prefixo(tmp_path, monkeypatch):
 
     with pytest.raises(Cancelled):
         mod.compress_file(
-            src, 4_000, TODOS, SEM_FERRAMENTAS, converter_webp=True,
+            src, Alvo.absoluto(4_000), TODOS, SEM_FERRAMENTAS, converter_webp=True,
             should_cancel=lambda: True,
         )
     assert codificados == []
@@ -1215,7 +1216,7 @@ def test_escada_so_de_prefixo_nao_quebra(tmp_path, monkeypatch):
     _curva_falsa(monkeypatch, formato_png, [4_900, 4_800] + [1_000] * 8)
 
     r = mod.compress_file(
-        src, 4_000, Toggles(False, True, False, True), COM_OXIPNG,
+        src, Alvo.absoluto(4_000), Toggles(False, True, False, True), COM_OXIPNG,
     )
 
     assert r.hit_target is False
@@ -1238,7 +1239,7 @@ def test_orcamento_de_encodes_no_pior_caso(
     mod, src, info = _preparar_formato(tmp_path, monkeypatch, entrada)
     codificados = _curva_falsa(monkeypatch, modulo, [4_900] * len(modulo.TABELA))
 
-    mod.compress_file(src, 100, TODOS, ferramentas, converter_webp=conversao)
+    mod.compress_file(src, Alvo.absoluto(100), TODOS, ferramentas, converter_webp=conversao)
 
     assert len(codificados) == esperado, codificados
 
@@ -1267,7 +1268,7 @@ def test_captura_de_tela_png_para_webp_entrega_o_sem_perda(tmp_path):
     ) > alvo
     sonda.unlink()
 
-    r = compress_file(src, alvo, TODOS, SEM_FERRAMENTAS, converter_webp=True)
+    r = compress_file(src, Alvo.absoluto(alvo), TODOS, SEM_FERRAMENTAS, converter_webp=True)
 
     assert r.params == formato_webp.TABELA[0]
     assert r.formato_saida is Formato.WEBP and r.hit_target is True
@@ -1285,7 +1286,138 @@ def test_png_sem_oxipng_poupa_um_encode_em_qualquer_alvo(tmp_path, monkeypatch):
     mod, src, info = _preparar_formato(tmp_path, monkeypatch, Formato.PNG)
     codificados = _curva_falsa(monkeypatch, formato_png, [4_900] * 10)
 
-    mod.compress_file(src, 100, TODOS, SEM_FERRAMENTAS)
+    mod.compress_file(src, Alvo.absoluto(100), TODOS, SEM_FERRAMENTAS)
 
     assert codificados.count(0) == 1 and 1 not in codificados
     assert len(codificados) <= 1 + 4
+
+
+# ---------- Alvo: absoluto ou relativo ao arquivo ----------
+
+
+def test_alvo_absoluto_ignora_o_tamanho_da_entrada():
+    alvo = Alvo.absoluto(4_000)
+    assert alvo.bytes_para(1) == 4_000
+    assert alvo.bytes_para(5_000) == 4_000
+    assert alvo.bytes_para(10_000_000) == 4_000
+
+
+def test_alvo_relativo_escala_com_a_entrada():
+    alvo = Alvo.relativo(50)
+    assert alvo.bytes_para(1_000) == 500
+    assert alvo.bytes_para(4_000) == 2_000
+    assert Alvo.relativo(25).bytes_para(1_000) == 250
+
+
+def test_alvo_relativo_nunca_devolve_zero():
+    """Um alvo de 0 byte tornaria qualquer arquivo "impossível"."""
+    assert Alvo.relativo(50).bytes_para(1) == 1
+    assert Alvo.relativo(1).bytes_para(10) == 1
+
+
+@pytest.mark.parametrize("pct", [0, -5, 100.5, 101, float("nan")])
+def test_alvo_relativo_recusa_percentual_invalido(pct):
+    with pytest.raises(ValueError):
+        Alvo.relativo(pct)
+
+
+@pytest.mark.parametrize("n", [0, -1])
+def test_alvo_absoluto_recusa_bytes_invalidos(n):
+    with pytest.raises(ValueError):
+        Alvo.absoluto(n)
+
+
+def test_alvo_e_congelado():
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        Alvo.relativo(50).valor = 10  # type: ignore[misc]
+
+
+def test_o_alvo_relativo_e_resolvido_por_arquivo_dentro_do_compress_file(
+    tmp_path, monkeypatch
+):
+    """Mesmo `Alvo.relativo(60)`, dois arquivos de tamanhos diferentes: o
+    codificador devolve sempre 3.000 B, que cabe em 60% de 6.000 mas não em
+    60% de 4.000. Só uma resolução feita DENTRO de `compress_file`, depois de
+    medir cada entrada, dá respostas diferentes."""
+    from gifc import compress as mod
+
+    def encode(s, d, params, i, t):
+        d.write_bytes(b"GIF89a" + b"y" * 2_994)
+        return d.stat().st_size
+
+    monkeypatch.setattr(formato_gif, "codificar", encode)
+    alvo = Alvo.relativo(60)
+    resultados = []
+    for n in (6_000, 4_000):
+        src = tmp_path / f"{n}.gif"
+        src.write_bytes(b"GIF89a" + b"x" * (n - 6))
+        info = ImagemInfo(
+            path=src, formato=Formato.GIF, width=100, height=100, fps=30.0,
+            frame_count=30, duration=1.0, size_bytes=n,
+        )
+        monkeypatch.setattr(mod, "probe", lambda p, info=info: info)
+        resultados.append(
+            mod.compress_file(src, alvo, TODOS, Tools("ffmpeg", "ffprobe", "gifsicle"))
+        )
+
+    grande, pequeno = resultados
+    assert grande.hit_target is True       # 3.000 <= 3.600
+    assert pequeno.hit_target is False     # 3.000 >  2.400
+
+
+def test_hit_target_e_medido_contra_o_alvo_resolvido_e_nao_contra_o_limite(
+    tmp_path, monkeypatch
+):
+    mod, src, info, tools = _preparar(tmp_path, monkeypatch)  # 5.006 B
+
+    def encode(s, d, params, i, t):
+        d.write_bytes(b"GIF89a" + b"y" * 2_494)  # 2.500 B
+        return d.stat().st_size
+
+    monkeypatch.setattr(formato_gif, "codificar", encode)
+    assert mod.compress_file(src, Alvo.relativo(50), TODOS, tools).hit_target is True
+    assert mod.compress_file(src, Alvo.relativo(49), TODOS, tools).hit_target is False
+
+
+def test_no_modo_relativo_o_piso_nao_prende_a_busca_no_degrau_zero(
+    tmp_path, monkeypatch
+):
+    """Com 10 MB a entrada cabe e só o degrau 0 é medido; com 50% ela não
+    cabe e a escada é percorrida. É a diferença que o usuário enxerga."""
+    mod, src, info, tools = _preparar(tmp_path, monkeypatch)  # 5.006 B
+
+    def encode(s, d, params, i, t):
+        idx = int(d.stem.split("_")[1])
+        d.write_bytes(b"GIF89a" + b"y" * max(1, 3_994 - idx * 200))
+        return d.stat().st_size
+
+    monkeypatch.setattr(formato_gif, "codificar", encode)
+
+    folgado = mod.compress_file(src, Alvo.absoluto(10_000_000), TODOS, tools)
+    assert folgado.params == formato_gif.TABELA[0]
+
+    relativo = mod.compress_file(src, Alvo.relativo(50), TODOS, tools)
+    assert relativo.params != formato_gif.TABELA[0]
+    assert relativo.hit_target is True
+    assert relativo.final_bytes <= 2_503
+
+
+@pytest.mark.integration
+def test_o_mesmo_arquivo_rende_mais_com_alvo_relativo(tools, tmp_path):
+    """O número que motivou a tarefa: no mesmo GIF, 10 MB entrega só a
+    economia de graça e 50% da entrada entrega bem mais."""
+    src = tmp_path / "anim.gif"
+    subprocess.run(
+        [tools.ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i",
+         "testsrc2=size=320x240:rate=15:duration=2", "-t", "2", str(src)],
+        check=True, capture_output=True,
+    )
+    antes = src.read_bytes()
+
+    absoluto = compress_file(src, Alvo.absoluto(10_000_000), TODOS, tools)
+    relativo = compress_file(src, Alvo.relativo(50), TODOS, tools)
+
+    assert src.read_bytes() == antes
+    assert relativo.hit_target is True
+    assert relativo.final_bytes <= src.stat().st_size // 2
+    assert relativo.reduction_pct >= absoluto.reduction_pct + 20

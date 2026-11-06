@@ -7,7 +7,7 @@ import pytest
 from PIL import Image, ImageChops, ImageCms, ImageDraw, ImageOps
 
 from gifc import formatos
-from gifc.compress import compress_file
+from gifc.compress import Alvo, compress_file
 from gifc.formatos.base import EncodeError
 from gifc.formatos.png import (
     NEUTROS,
@@ -320,14 +320,14 @@ def test_png_nunca_sai_maior_que_a_entrada(ferramentas, tmp_path):
     assert q64 < original
 
     # Alvo folgado: o melhor resultado nunca pode ser maior que a entrada.
-    folgado = compress_file(src, 50_000_000, TODOS, ferramentas)
+    folgado = compress_file(src, Alvo.absoluto(50_000_000), TODOS, ferramentas)
     assert folgado.final_bytes <= original
     assert folgado.dst.is_file()
     assert folgado.dst.stat().st_size == folgado.final_bytes
 
     # Alvo apertado: a busca passa pelo degrau que cresce e ainda assim
     # entrega algo que cabe e que não é maior que a entrada.
-    apertado = compress_file(src, original // 2, TODOS, ferramentas)
+    apertado = compress_file(src, Alvo.absoluto(original // 2), TODOS, ferramentas)
     assert apertado.final_bytes <= original // 2
     assert apertado.hit_target is True
 
@@ -438,7 +438,7 @@ def test_nunca_modifica_o_original(ferramentas, tmp_path):
     info = probe(src)
     for indice in (0, 2, 9):
         codificar(src, tmp_path / f"s{indice}.png", TABELA[indice], info, ferramentas)
-    compress_file(src, 20_000, TODOS, ferramentas)
+    compress_file(src, Alvo.absoluto(20_000), TODOS, ferramentas)
     assert _sha(src) == antes
 
 
@@ -448,7 +448,7 @@ def test_compress_file_encaixa_png_de_interface_num_alvo_apertado(
 ):
     src = _png_de_interface(tmp_path / "ui.png")
     alvo = src.stat().st_size // 4
-    r = compress_file(src, alvo, TODOS, ferramentas)
+    r = compress_file(src, Alvo.absoluto(alvo), TODOS, ferramentas)
     assert r.hit_target is True
     assert r.final_bytes <= alvo
     assert r.dst.suffix == ".png"

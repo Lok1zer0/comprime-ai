@@ -30,9 +30,10 @@ from gifc.app import (
     _formatos_dos_arquivos,
     _mb,
     _parse_alvo_mb,
+    _parse_alvo_pct,
     _texto_resultado,
 )
-from gifc.compress import CompressResult
+from gifc.compress import Alvo, CompressResult
 from gifc.formatos import gif, jpeg, png, webp
 from gifc.formatos.gif import Params
 from gifc.ladder import ALAVANCAS, Toggles
@@ -594,6 +595,16 @@ def test_estado_inicial_tem_tudo_habilitado(app):
 # ---------- da soltura ao worker ----------
 
 
+erros: list[str] = []
+
+
+def _restaurar_alvo(app) -> None:
+    app.modo_alvo.set("relativo")
+    app.alvo_pct.set("50")
+    app.alvo_mb.set("10")
+    app._ao_mudar_modo_alvo()
+
+
 @pytest.fixture
 def _lote_falso(app, monkeypatch, tmp_path):
     """Roda `_processar` de verdade, mas troca o worker por um gravador."""
@@ -609,6 +620,10 @@ def _lote_falso(app, monkeypatch, tmp_path):
     monkeypatch.setattr(app, "_trabalhar", worker_falso)
     monkeypatch.setattr(app, "tools", object())
     monkeypatch.setattr(app_mod.messagebox, "showinfo", lambda *a, **k: None)
+    erros.clear()
+    monkeypatch.setattr(
+        app_mod.messagebox, "showerror", lambda *a, **k: erros.append(a[0])
+    )
     avisos: list[str] = []
     monkeypatch.setattr(
         app_mod.messagebox, "showwarning", lambda *a, **k: avisos.append(a[0])
@@ -626,6 +641,7 @@ def _lote_falso(app, monkeypatch, tmp_path):
     yield soltar, esperar, chamadas, avisos
     app.tg_webp.set(False)
     app._ajustar_alavancas(set())
+    _restaurar_alvo(app)
 
 
 def test_soltar_pngs_desabilita_as_alavancas_de_gif(app, _lote_falso):
@@ -678,6 +694,106 @@ def test_extensao_recusada_nao_dispara_o_worker(app, _lote_falso):
     assert chamadas == []
     assert app.trabalhando is False
     assert avisos, "o usuário precisa ser avisado de que nada foi aceito"
+
+
+# ---------- alvo: relativo (padrão) ou absoluto ----------
+
+
+@pytest.mark.parametrize(
+    "texto, esperado",
+    [("50", 50.0), ("37,5", 37.5), ("37.5", 37.5), ("  100 ", 100.0)],
+)
+def test_parse_alvo_pct_aceita_numero_com_virgula_ou_ponto(texto, esperado):
+    assert _parse_alvo_pct(texto) == esperado
+
+
+@pytest.mark.parametrize("texto", ["", "  ", "abc", "0", "-5", "101", "nan"])
+def test_parse_alvo_pct_recusa_o_invalido(texto):
+    with pytest.raises(ValueError):
+        _parse_alvo_pct(texto)
+
+
+def test_o_modo_padrao_e_relativo_em_50_por_cento(app):
+    assert app.modo_alvo.get() == "relativo"
+    assert app.alvo_pct.get() == "50"
+    assert app.alvo_mb.get() == "10"
+    assert not _desabilitado(app.campo_pct)
+    assert _desabilitado(app.campo_mb)
+
+
+def test_alternar_o_modo_desabilita_o_campo_do_outro(app):
+    try:
+        app.rb_absoluto.invoke()
+        assert app.modo_alvo.get() == "absoluto"
+        assert _desabilitado(app.campo_pct)
+        assert not _desabilitado(app.campo_mb)
+        app.rb_relativo.invoke()
+        assert app.modo_alvo.get() == "relativo"
+        assert not _desabilitado(app.campo_pct)
+        assert _desabilitado(app.campo_mb)
+    finally:
+        _restaurar_alvo(app)
+
+
+def test_os_presets_em_mb_selecionam_o_modo_absoluto_junto(app):
+    esperado = {"Discord 10": "10", "WhatsApp 16": "16", "5": "5", "2": "2"}
+    assert {r for r, _ in app.botoes_preset} == set(esperado)
+    try:
+        for rotulo, botao in app.botoes_preset:
+            _restaurar_alvo(app)
+            botao.invoke()
+            assert app.modo_alvo.get() == "absoluto", rotulo
+            assert app.alvo_mb.get() == esperado[rotulo], rotulo
+            assert not _desabilitado(app.campo_mb), rotulo
+            assert _desabilitado(app.campo_pct), rotulo
+    finally:
+        _restaurar_alvo(app)
+
+
+def test_o_lote_recebe_um_alvo_relativo_por_padrao(app, _lote_falso):
+    soltar, esperar, chamadas, _ = _lote_falso
+    soltar("a.png")
+    esperar()
+    assert chamadas[-1][1] == Alvo.relativo(50)
+
+
+def test_o_lote_recebe_o_percentual_digitado(app, _lote_falso):
+    soltar, esperar, chamadas, _ = _lote_falso
+    app.alvo_pct.set("37,5")
+    soltar("a.png")
+    esperar()
+    assert chamadas[-1][1] == Alvo.relativo(37.5)
+
+
+def test_o_lote_recebe_o_alvo_absoluto_depois_de_um_preset(app, _lote_falso):
+    soltar, esperar, chamadas, _ = _lote_falso
+    dict(app.botoes_preset)["WhatsApp 16"].invoke()
+    soltar("a.png")
+    esperar()
+    assert chamadas[-1][1] == Alvo.absoluto(16 * MB)
+
+
+def test_o_campo_do_modo_inativo_nao_atrapalha(app, _lote_falso):
+    """Lixo no campo de MB não pode impedir um lote em modo relativo."""
+    soltar, esperar, chamadas, _ = _lote_falso
+    app.alvo_mb.set("lixo")
+    soltar("a.png")
+    esperar()
+    assert chamadas[-1][1] == Alvo.relativo(50)
+
+
+@pytest.mark.parametrize("modo, campo", [("relativo", "alvo_pct"), ("absoluto", "alvo_mb")])
+@pytest.mark.parametrize("texto", ["", "abc", "0", "-3"])
+def test_alvo_invalido_no_modo_ativo_nao_dispara_o_worker(
+    app, _lote_falso, modo, campo, texto
+):
+    soltar, _, chamadas, _ = _lote_falso
+    app.modo_alvo.set(modo)
+    getattr(app, campo).set(texto)
+    soltar("a.png")
+    assert chamadas == []
+    assert app.trabalhando is False
+    assert erros == ["Alvo inválido"], "o usuário precisa saber por que nada rodou"
 
 
 # ---------- o worker não toca em widget ----------
@@ -1157,7 +1273,7 @@ def test_texto_descreve_o_arquivo_escrito_e_nao_o_pedido(
 
     monkeypatch.setattr(formato_webp, "codificar", webp_falso)
     r = compress_file(
-        src, 10 * MB, Toggles(), Tools("ffmpeg", "ffprobe", None),
+        src, Alvo.absoluto(10 * MB), Toggles(), Tools("ffmpeg", "ffprobe", None),
         converter_webp=True,
     )
 

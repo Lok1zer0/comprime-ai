@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from gifc import formatos
-from gifc.compress import _try_path
+from gifc.compress import Alvo, _try_path
 from gifc.ladder import Toggles
 from gifc.probe import Formato
 from gifc.tools import Tools
@@ -97,7 +97,7 @@ def test_formato_sem_modulo_nao_vira_degrau_que_falhou(tmp_path, monkeypatch):
 
     with pytest.raises(formatos.FormatoNaoSuportado):
         compress_file(
-            src, 1, Toggles(), Tools("ffmpeg", "ffprobe", None), converter_webp=True,
+            src, Alvo.absoluto(1), Toggles(), Tools("ffmpeg", "ffprobe", None), converter_webp=True,
         )
     assert [p.name for p in tmp_path.iterdir()] == ["a.png"]
 

@@ -25,7 +25,7 @@ from tkinter import BooleanVar, StringVar, messagebox, ttk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from gifc import formatos, tema
-from gifc.compress import CompressResult, compress_file
+from gifc.compress import Alvo, CompressResult, compress_file
 from gifc.ladder import ALAVANCAS, Toggles
 from gifc.probe import Formato
 from gifc.search import Attempt, Cancelled
@@ -111,6 +111,21 @@ def _parse_alvo_mb(texto: str) -> int:
     if valor <= 0:
         raise ValueError("O alvo deve ser maior que zero.")
     return int(valor * MB)
+
+
+def _parse_alvo_pct(texto: str) -> float:
+    """Converte o texto do campo de alvo relativo (em %) para um número.
+
+    Mesmas regras de `_parse_alvo_mb` quanto a vírgula e espaços. Aceita de
+    mais que 0 até 100; fora disso (ou não numérico) levanta `ValueError`.
+    """
+    texto = texto.strip().replace(",", ".")
+    if not texto:
+        raise ValueError("Informe um percentual entre 1 e 100.")
+    valor = float(texto)
+    if not (0 < valor <= 100):
+        raise ValueError("O percentual deve ser maior que 0 e no máximo 100.")
+    return valor
 
 
 def _filtrar_caminhos(caminhos: Iterable[Path]) -> tuple[list[Path], int]:
@@ -302,6 +317,11 @@ class App(TkinterDnD.Tk):
         self.arquivos_concluidos = 0
         self.tentativas_arquivo_atual = 0
 
+        # Dois modos exclusivos; o relativo é o padrão porque um teto fixo de
+        # 10 MB já cabe quase toda entrada, e então só a economia "de graça"
+        # é elegível (ver o piso em `compress_file`).
+        self.modo_alvo = StringVar(value="relativo")
+        self.alvo_pct = StringVar(value="50")
         self.alvo_mb = StringVar(value="10")
         self.tg_palette = BooleanVar(value=True)
         self.tg_lossy = BooleanVar(value=True)
@@ -379,20 +399,48 @@ class App(TkinterDnD.Tk):
 
         alvo = tema.cria_labelframe(raiz, "Tamanho-alvo", padding=8)
         alvo.pack(fill="x")
-        linha = ttk.Frame(alvo)
-        linha.pack(fill="x")
-        tema.campo_arredondado(
-            linha, textvariable=self.alvo_mb, width=8
-        ).pack(side="left")
-        ttk.Label(linha, text="MB").pack(side="left", padx=(4, 12))
+        # Radio, não caixa: os dois modos são exclusivos e um sempre vale (o
+        # mesmo raciocínio de "Formato de saída"). O campo do modo inativo
+        # fica desabilitado em vez de aceitar digitação que seria ignorada.
+        grade = ttk.Frame(alvo)
+        grade.pack(fill="x")
+        self.rb_relativo = ttk.Radiobutton(
+            grade, text="Reduzir para", variable=self.modo_alvo,
+            value="relativo", command=self._ao_mudar_modo_alvo,
+        )
+        self.rb_relativo.grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.campo_pct = tema.campo_arredondado(
+            grade, textvariable=self.alvo_pct, width=8
+        )
+        self.campo_pct.grid(row=0, column=1, sticky="w")
+        ttk.Label(grade, text="%").grid(row=0, column=2, sticky="w", padx=(4, 12))
+
+        self.rb_absoluto = ttk.Radiobutton(
+            grade, text="Caber em", variable=self.modo_alvo,
+            value="absoluto", command=self._ao_mudar_modo_alvo,
+        )
+        self.rb_absoluto.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(6, 0))
+        self.campo_mb = tema.campo_arredondado(
+            grade, textvariable=self.alvo_mb, width=8
+        )
+        self.campo_mb.grid(row=1, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(grade, text="MB").grid(
+            row=1, column=2, sticky="w", padx=(4, 12), pady=(6, 0)
+        )
+        presets = ttk.Frame(grade)
+        presets.grid(row=1, column=3, sticky="w", pady=(6, 0))
         # Sem `width=` fixo: era `width=11` em caracteres, e "WhatsApp 16"
         # não cabia com o padding — saía "WhatsApp 1". Cada botão se mede
         # pelo próprio texto.
+        self.botoes_preset: list[tuple[str, ttk.Button]] = []
         for rotulo, valor in PRESETS:
-            tema.botao_arredondado(
-                linha, rotulo,
-                command=lambda v=valor: self.alvo_mb.set(str(v)),
-            ).pack(side="left", padx=2)
+            botao = tema.botao_arredondado(
+                presets, rotulo,
+                command=lambda v=valor: self._usar_preset(v),
+            )
+            botao.pack(side="left", padx=2)
+            self.botoes_preset.append((rotulo, botao))
+        self._ao_mudar_modo_alvo()
 
         alav = tema.cria_labelframe(raiz, "Alavancas permitidas", padding=8)
         alav.pack(fill="x", pady=12)
@@ -566,12 +614,13 @@ class App(TkinterDnD.Tk):
 
         self._ajustar_alavancas(_formatos_dos_arquivos(arquivos))
 
+        # Lido AQUI, na thread principal: o worker recebe um `Alvo` (valor
+        # congelado), nunca a variável Tk. Um alvo relativo só vira bytes
+        # dentro de `compress_file`, arquivo a arquivo.
         try:
-            alvo = _parse_alvo_mb(self.alvo_mb.get())
-        except ValueError:
-            messagebox.showerror(
-                "Alvo inválido", "Informe um número de MB maior que zero."
-            )
+            alvo = self._alvo_da_interface()
+        except ValueError as exc:
+            messagebox.showerror("Alvo inválido", str(exc))
             return
 
         toggles = Toggles(
@@ -601,6 +650,24 @@ class App(TkinterDnD.Tk):
         self._thread.start()
 
     # ---------- alavancas que valem para o que foi solto ----------
+
+    def _ao_mudar_modo_alvo(self) -> None:
+        """Só o campo do modo ativo fica editável."""
+        relativo = self.modo_alvo.get() == "relativo"
+        self.campo_pct.state(["!disabled" if relativo else "disabled"])
+        self.campo_mb.state(["disabled" if relativo else "!disabled"])
+
+    def _usar_preset(self, mb: float) -> None:
+        """Um preset em MB é um limite externo: escolhe o modo absoluto."""
+        self.alvo_mb.set(f"{mb:g}")
+        self.modo_alvo.set("absoluto")
+        self._ao_mudar_modo_alvo()
+
+    def _alvo_da_interface(self) -> Alvo:
+        """Lê o modo e o campo ativos. Só o campo ativo é validado."""
+        if self.modo_alvo.get() == "relativo":
+            return Alvo.relativo(_parse_alvo_pct(self.alvo_pct.get()))
+        return Alvo.absoluto(_parse_alvo_mb(self.alvo_mb.get()))
 
     def _ao_mudar_conversao(self) -> None:
         """A caixa de WebP muda a escada do PNG/JPEG: reavalia as alavancas."""
@@ -635,7 +702,7 @@ class App(TkinterDnD.Tk):
     def _trabalhar(
         self,
         arquivos: list[Path],
-        alvo: int,
+        alvo: Alvo,
         toggles: Toggles,
         converter_webp: bool,
     ) -> None:

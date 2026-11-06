@@ -29,7 +29,8 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-Arraste GIFs para a janela, defina o tamanho-alvo em MB e aguarde. Os
+Arraste imagens para a janela, escolha o tamanho-alvo (reduzir para uma % do
+original, ou caber em N MB) e aguarde. Os
 arquivos comprimidos aparecem ao lado dos originais, com o sufixo
 `_comprimido`. Os originais nunca são modificados.
 
