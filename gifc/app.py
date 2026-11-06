@@ -31,8 +31,8 @@ from gifc.ladder import ALAVANCAS, Toggles
 from gifc.probe import Formato
 from gifc.search import Attempt, Cancelled
 from gifc.tools import (
+    APP_DIR,
     BIN_DIR,
-    PROJECT_ROOT,
     GIFSICLE_URL,
     DownloadError,
     MissingToolError,
@@ -337,9 +337,9 @@ class App(TkinterDnD.Tk):
         self.title("Comprime Aí")
         tema.barra_escura(self)
         # Devolve False enquanto o .ico não existir — ele é gerado no
-        # empacotamento. Quando `PROJECT_ROOT` passar a seguir o executável
-        # congelado, este caminho acompanha sozinho.
-        tema.icone_da_janela(self, PROJECT_ROOT / "assets" / "icone.ico")
+        # empacotamento. `APP_DIR` segue o executável quando congelado e a raiz
+        # do projeto fora dele (`PROJECT_ROOT` vem de `__file__`, não serve).
+        tema.icone_da_janela(self, APP_DIR / "assets" / "icone.ico")
 
         self.tools: Tools | None = None
         self.erro_ferramentas: str | None = None

@@ -14,11 +14,14 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Congelado, o app procura ao lado do próprio executável; solto, na raiz do projeto.
-APP_DIR = (
-    Path(sys.executable).resolve().parent
-    if getattr(sys, "frozen", False)
-    else PROJECT_ROOT
-)
+def _pasta_do_app() -> Path:
+    """A pasta do executável quando congelado; a raiz do projeto fora."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return PROJECT_ROOT
+
+
+APP_DIR = _pasta_do_app()
 BIN_DIR = APP_DIR / "bin"
 
 GIFSICLE_URL = (
@@ -41,10 +44,14 @@ class MissingToolError(Exception):
 
     def __init__(self, tool: str) -> None:
         self.tool = tool
-        super().__init__(
-            f"Ferramenta não encontrada: {tool}. "
-            f"Instale-a e garanta que está no PATH."
-        )
+        if getattr(sys, "frozen", False):
+            dica = (
+                "A instalação parece incompleta. Extraia o programa de novo "
+                "por inteiro, sem tirar nada de dentro da pasta, ou baixe-o outra vez."
+            )
+        else:
+            dica = "Instale-a e garanta que está no PATH."
+        super().__init__(f"Ferramenta não encontrada: {tool}. {dica}")
 
 
 @dataclass(frozen=True)

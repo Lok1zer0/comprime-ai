@@ -10,6 +10,7 @@ from gifc.tools import (
     APP_DIR,
     BIN_DIR,
     PROJECT_ROOT,
+    _pasta_do_app,
     GIFSICLE_SHA256,
     GIFSICLE_URL,
     OXIPNG_SHA256,
@@ -300,3 +301,49 @@ def test_find_tools_sem_ffmpeg_em_lugar_nenhum_levanta(tmp_path, monkeypatch):
     with pytest.raises(MissingToolError) as exc:
         find_tools(tmp_path)
     assert exc.value.tool == "ffmpeg"
+
+
+def test_pasta_do_app_congelado_e_a_do_executavel(tmp_path, monkeypatch):
+    _congelar(monkeypatch, tmp_path / "exe")
+    assert _pasta_do_app() == (tmp_path / "exe").resolve()
+
+
+def test_pasta_do_app_solto_e_a_raiz_do_projeto(monkeypatch):
+    _solto(monkeypatch)
+    assert _pasta_do_app() == PROJECT_ROOT
+
+
+def test_find_tools_pasta_do_exe_vence_bin_dir_com_o_mesmo_nome(tmp_path, monkeypatch):
+    _solto(monkeypatch)
+    exe = tmp_path / "exe"
+    _congelar(monkeypatch, exe)
+    monkeypatch.setattr("gifc.tools.shutil.which", lambda n: None)
+    novo = _falso(exe, "ffmpeg")
+    velho = _falso(tmp_path / "bin", "ffmpeg")
+    novo.write_bytes(b"novo")
+    velho.write_bytes(b"velho")
+    assert find_tools(tmp_path / "bin").ffmpeg == str(novo)
+
+
+def test_find_tools_meipass_vence_bin_dir_com_o_mesmo_nome(tmp_path, monkeypatch):
+    _solto(monkeypatch)
+    exe, mei = tmp_path / "exe", tmp_path / "mei"
+    _congelar(monkeypatch, exe, mei)
+    monkeypatch.setattr("gifc.tools.shutil.which", lambda n: None)
+    novo = _falso(mei, "ffmpeg")
+    velho = _falso(tmp_path / "bin", "ffmpeg")
+    novo.write_bytes(b"novo")
+    velho.write_bytes(b"velho")
+    assert find_tools(tmp_path / "bin").ffmpeg == str(novo)
+
+
+def test_erro_congelado_nao_manda_mexer_no_path(monkeypatch):
+    monkeypatch.setattr("gifc.tools.sys.frozen", True, raising=False)
+    msg = str(MissingToolError("ffmpeg"))
+    assert "ffmpeg" in msg and "PATH" not in msg and "Extraia" in msg
+
+
+def test_erro_fora_do_bundle_manda_checar_o_path(monkeypatch):
+    _solto(monkeypatch)
+    msg = str(MissingToolError("ffmpeg"))
+    assert "ffmpeg" in msg and "PATH" in msg
