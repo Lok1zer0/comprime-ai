@@ -396,22 +396,28 @@ Pontos que a spec fixa:
   `pytest`; confira o que mais aparece no relatório de tamanho e corte o que
   não for usado em runtime. O ViralCut cortou ~194 MB assim.
 
-- [ ] **Step 0: Decidir se o `.ico` fica commitado**
+- [ ] **Step 0: Passar o `.ico` a derivado (decidido)**
 
-Hoje `assets/icone.ico` está no repositório. O ViralCut deriva o dele no
-build e não commita, com o argumento de que um binário commitado
-dessincroniza do desenho. O argumento é bom.
+**O `.ico` sai do git.** `assets/cai-logo.png` passa a ser a única fonte da
+verdade; o `.ico` é gerado na spec, como o ViralCut faz — binário commitado
+dessincroniza do desenho.
 
-O contra: derivando só no build, a janela fica sem ícone em desenvolvimento
-até alguém rodar o script.
+Para o desenvolvimento não ficar sem ícone, faça `tema.icone_da_janela`
+chamar `tools/gerar_icone.py` quando o arquivo não existir. Depois remova
+`assets/icone.ico` do controle de versão e acrescente-o ao `.gitignore`.
 
-Resolução sugerida: **gerar na spec, como o ViralCut faz**, e fazer
-`tema.icone_da_janela` chamar o gerador quando o `.ico` não existir. Aí o
-PNG é a única fonte da verdade e o desenvolvimento também tem ícone. Se
-adotar, remova `assets/icone.ico` do git.
+**Logo completo em todos os tamanhos (decidido).** Foi avaliada a
+alternativa de usar só o quadrado central nos tamanhos pequenos, que é mais
+legível em 16px — a comparação ampliada foi vista e a marca inteira foi
+preferida. Não gere variante simplificada.
 
-**Acrescente os tamanhos 20, 40 e 96** de qualquer forma: o `.ico` atual não
-os tem, e sem eles o Windows estica o vizinho em 125%, 150% e 175% de DPI.
+**Acrescente os tamanhos 20, 40 e 96.** O `.ico` atual tem 16, 24, 32, 48,
+64, 128 e 256; faltando os intermediários o Windows estica o vizinho e o
+ícone sai borrado em 125%, 150% e 175% de DPI. Lista final: 16, 20, 24, 32,
+40, 48, 64, 96, 128, 256.
+
+**Falhe macio:** sem ícone o programa funciona igual, e derrubar o build por
+causa disso é desproporcional.
 
 - [ ] **Step 1: Conferir o ícone**
 
