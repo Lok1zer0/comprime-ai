@@ -24,7 +24,7 @@ from gifc.tools import Tools
 
 TODOS = Toggles(True, True, True, True)
 # JPEG não usa nenhuma ferramenta externa: tudo vai pelo Pillow.
-SEM_FERRAMENTAS = Tools("ffmpeg", "ffprobe", None, oxipng=None)
+SEM_FERRAMENTAS = Tools("ffmpeg", None, oxipng=None)
 
 ORIENTACAO = 0x0112
 

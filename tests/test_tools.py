@@ -1,10 +1,15 @@
+import dataclasses
 import io
+import sys
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from gifc.tools import (
+    APP_DIR,
+    BIN_DIR,
+    PROJECT_ROOT,
     GIFSICLE_SHA256,
     GIFSICLE_URL,
     OXIPNG_SHA256,
@@ -14,6 +19,7 @@ from gifc.tools import (
     MissingToolError,
     Tools,
     download_gifsicle,
+    dirs_de_busca,
     download_oxipng,
     extract_gifsicle,
     extract_oxipng,
@@ -32,7 +38,7 @@ def test_gifsicle_path_fica_dentro_do_bin_dir(tmp_path):
 def test_find_tools_acha_ffmpeg_no_path(tmp_path):
     tools = find_tools(tmp_path)
     assert tools.ffmpeg
-    assert tools.ffprobe
+    assert "ffprobe" not in dir(tools)
     assert Path(tools.ffmpeg).name.startswith("ffmpeg")
 
 
@@ -50,7 +56,7 @@ def test_find_tools_acha_gifsicle_no_bin_dir(tmp_path):
 
 
 def test_tools_e_imutavel():
-    t = Tools(ffmpeg="a", ffprobe="b", gifsicle=None)
+    t = Tools(ffmpeg="a", gifsicle=None)
     with pytest.raises(Exception):
         t.ffmpeg = "c"  # type: ignore[misc]
 
@@ -192,7 +198,7 @@ def test_find_tools_acha_oxipng_no_bin_dir(tmp_path):
 
 def test_tools_aceita_construcao_sem_oxipng():
     """Quem monta `Tools` à mão com os três campos antigos continua válido."""
-    assert Tools("a", "b", None).oxipng is None
+    assert Tools("a", None).oxipng is None
 
 
 @pytest.mark.integration
@@ -200,3 +206,97 @@ def test_download_real_do_oxipng_bate_o_hash(tmp_path):
     destino = download_oxipng(tmp_path)
     assert destino.is_file()
     assert destino.stat().st_size > 100_000
+
+
+# --- busca com precedência de bundle -------------------------------------
+
+def _congelar(monkeypatch, exe_dir: Path, meipass: Path | None = None) -> None:
+    monkeypatch.setattr("gifc.tools.sys.frozen", True, raising=False)
+    monkeypatch.setattr("gifc.tools.sys.executable", str(exe_dir / "app.exe"))
+    if meipass is not None:
+        monkeypatch.setattr("gifc.tools.sys._MEIPASS", str(meipass), raising=False)
+
+
+def _solto(monkeypatch) -> None:
+    """Garante o modo de desenvolvimento, mesmo rodando dentro de um bundle."""
+    monkeypatch.delattr("gifc.tools.sys.frozen", raising=False)
+    monkeypatch.delattr("gifc.tools.sys._MEIPASS", raising=False)
+
+
+def _falso(pasta: Path, nome: str) -> Path:
+    pasta.mkdir(parents=True, exist_ok=True)
+    arq = pasta / (f"{nome}.exe" if sys.platform == "win32" else nome)
+    arq.write_bytes(b"x")
+    return arq
+
+
+def test_tools_nao_tem_mais_ffprobe():
+    assert "ffprobe" not in {f.name for f in dataclasses.fields(Tools)}
+
+
+def test_dirs_de_busca_fora_do_bundle_e_so_o_bin_dir(tmp_path, monkeypatch):
+    _solto(monkeypatch)
+    assert dirs_de_busca(tmp_path) == [tmp_path]
+
+
+def test_dirs_de_busca_congelado_poe_a_pasta_do_exe_primeiro(tmp_path, monkeypatch):
+    _solto(monkeypatch)
+    exe = tmp_path / "exe"
+    _congelar(monkeypatch, exe)
+    assert dirs_de_busca(tmp_path / "bin") == [exe, tmp_path / "bin"]
+
+
+def test_dirs_de_busca_inclui_meipass(tmp_path, monkeypatch):
+    _solto(monkeypatch)
+    exe, mei = tmp_path / "exe", tmp_path / "exe" / "_internal"
+    _congelar(monkeypatch, exe, mei)
+    assert dirs_de_busca(tmp_path / "bin") == [exe, mei, tmp_path / "bin"]
+
+
+def test_meipass_sem_frozen_e_ignorado(tmp_path, monkeypatch):
+    _solto(monkeypatch)
+    monkeypatch.setattr("gifc.tools.sys._MEIPASS", str(tmp_path / "m"), raising=False)
+    assert dirs_de_busca(tmp_path) == [tmp_path]
+
+
+def test_app_dir_fora_do_bundle_e_a_raiz_do_projeto():
+    assert APP_DIR == PROJECT_ROOT
+    assert BIN_DIR == APP_DIR / "bin"
+
+
+def test_find_tools_prefere_o_bundle_ao_path(tmp_path, monkeypatch):
+    _solto(monkeypatch)
+    exe, mei = tmp_path / "exe", tmp_path / "exe" / "_internal"
+    _congelar(monkeypatch, exe, mei)
+    monkeypatch.setattr("gifc.tools.shutil.which", lambda n: f"/path/{n}")
+    ff = _falso(mei, "ffmpeg")
+    gs = _falso(exe, "gifsicle")
+    ox = _falso(tmp_path / "bin", "oxipng")
+    t = find_tools(tmp_path / "bin")
+    assert (t.ffmpeg, t.gifsicle, t.oxipng) == (str(ff), str(gs), str(ox))
+
+
+def test_find_tools_pasta_do_exe_vence_meipass(tmp_path, monkeypatch):
+    _solto(monkeypatch)
+    exe, mei = tmp_path / "exe", tmp_path / "exe" / "_internal"
+    _congelar(monkeypatch, exe, mei)
+    monkeypatch.setattr("gifc.tools.shutil.which", lambda n: None)
+    ao_lado = _falso(exe, "ffmpeg")
+    _falso(mei, "ffmpeg")
+    assert find_tools(tmp_path / "bin").ffmpeg == str(ao_lado)
+
+
+def test_find_tools_cai_no_path_quando_nao_ha_bundle(tmp_path, monkeypatch):
+    _solto(monkeypatch)
+    monkeypatch.setattr("gifc.tools.shutil.which", lambda n: f"/path/{n}")
+    t = find_tools(tmp_path)
+    assert (t.ffmpeg, t.gifsicle, t.oxipng) == (
+        "/path/ffmpeg", "/path/gifsicle", "/path/oxipng")
+
+
+def test_find_tools_sem_ffmpeg_em_lugar_nenhum_levanta(tmp_path, monkeypatch):
+    _solto(monkeypatch)
+    monkeypatch.setattr("gifc.tools.shutil.which", lambda n: None)
+    with pytest.raises(MissingToolError) as exc:
+        find_tools(tmp_path)
+    assert exc.value.tool == "ffmpeg"

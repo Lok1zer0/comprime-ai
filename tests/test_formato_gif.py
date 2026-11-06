@@ -20,7 +20,7 @@ from gifc.ladder import Toggles, aplicar_toggles
 from gifc.probe import Formato, ImagemInfo
 from gifc.tools import Tools
 
-FERRAMENTAS = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", gifsicle="gifsicle")
+FERRAMENTAS = Tools(ffmpeg="ffmpeg", gifsicle="gifsicle")
 
 
 def info(fps: float = 30.0, width: int = 800) -> ImagemInfo:
@@ -137,7 +137,7 @@ def test_encode_modo_degradado_sem_gifsicle_usa_so_o_ffmpeg(tmp_path, monkeypatc
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    ferramentas_degradadas = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", gifsicle=None)
+    ferramentas_degradadas = Tools(ffmpeg="ffmpeg", gifsicle=None)
     src = tmp_path / "a.gif"
     src.write_bytes(b"GIF89a-original")
     dst = tmp_path / "saida.gif"
@@ -303,7 +303,7 @@ def test_neutros_do_gif_sao_o_primeiro_degrau():
 
 
 def test_sem_gifsicle_o_toggle_lossy_e_desligado():
-    sem_gifsicle = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", gifsicle=None)
+    sem_gifsicle = Tools(ffmpeg="ffmpeg", gifsicle=None)
     assert toggles_efetivos(TODOS, sem_gifsicle) == Toggles(True, False, True, True)
 
 
@@ -314,6 +314,6 @@ def test_com_gifsicle_os_toggles_passam_inalterados():
 
 
 def test_sem_gifsicle_preserva_os_outros_toggles():
-    sem_gifsicle = Tools(ffmpeg="ffmpeg", ffprobe="ffprobe", gifsicle=None)
+    sem_gifsicle = Tools(ffmpeg="ffmpeg", gifsicle=None)
     entrada = Toggles(False, True, False, True)
     assert toggles_efetivos(entrada, sem_gifsicle) == Toggles(False, False, False, True)

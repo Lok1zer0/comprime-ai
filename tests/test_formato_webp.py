@@ -22,7 +22,7 @@ from gifc.probe import Formato, probe
 from gifc.tools import Tools
 
 # WebP não usa nenhuma ferramenta externa: tudo vai pelo Pillow.
-SEM_FERRAMENTAS = Tools("ffmpeg", "ffprobe", None, oxipng=None)
+SEM_FERRAMENTAS = Tools("ffmpeg", None, oxipng=None)
 
 ORIENTACAO = 0x0112
 

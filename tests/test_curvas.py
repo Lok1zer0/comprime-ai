@@ -43,7 +43,7 @@ from tests.imagens import (
 pytestmark = pytest.mark.integration
 
 TODOS = Toggles(True, True, True, True)
-SEM_FERRAMENTAS = Tools("ffmpeg", "ffprobe", None, oxipng=None)
+SEM_FERRAMENTAS = Tools("ffmpeg", None, oxipng=None)
 
 IMAGENS = {
     "captura": captura_de_tela,   # arte chapada

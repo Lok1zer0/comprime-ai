@@ -1,4 +1,4 @@
-"""Localização das ferramentas externas (ffmpeg, ffprobe, gifsicle, oxipng)."""
+"""Localização das ferramentas externas (ffmpeg, gifsicle, oxipng)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-BIN_DIR = PROJECT_ROOT / "bin"
+# Congelado, o app procura ao lado do próprio executável; solto, na raiz do projeto.
+APP_DIR = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else PROJECT_ROOT
+)
+BIN_DIR = APP_DIR / "bin"
 
 GIFSICLE_URL = (
     "https://eternallybored.org/misc/gifsicle/releases/gifsicle-1.95-win64.zip"
@@ -51,7 +57,6 @@ class Tools:
     """
 
     ffmpeg: str
-    ffprobe: str
     gifsicle: str | None
     oxipng: str | None = None
 
@@ -70,25 +75,43 @@ def oxipng_path(bin_dir: Path) -> Path:
     return bin_dir / _nome_exe("oxipng")
 
 
+def dirs_de_busca(bin_dir: Path) -> list[Path]:
+    """Pastas onde procurar as ferramentas, da mais para a menos prioritária.
+
+    Congelado: a pasta do executável, depois `sys._MEIPASS` (`_internal/` no
+    `onedir`, pasta temporária no `onefile`); em seguida `bin_dir`. O PATH
+    fica por último, em `find_tools`.
+    """
+    pastas: list[Path] = []
+    if getattr(sys, "frozen", False):
+        pastas.append(Path(sys.executable).resolve().parent)
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            pastas.append(Path(meipass))
+    pastas.append(bin_dir)
+    return pastas
+
+
+def _procurar(nome: str, pastas: list[Path]) -> str | None:
+    """O binário `nome` na primeira pasta que o tiver, senão no PATH."""
+    for pasta in pastas:
+        candidato = pasta / _nome_exe(nome)
+        if candidato.is_file():
+            return str(candidato)
+    return shutil.which(nome)
+
+
 def find_tools(bin_dir: Path = BIN_DIR) -> Tools:
     """Localiza as ferramentas. Levanta MissingToolError se faltar ffmpeg."""
-    ffmpeg = shutil.which("ffmpeg")
+    pastas = dirs_de_busca(bin_dir)
+    ffmpeg = _procurar("ffmpeg", pastas)
     if ffmpeg is None:
         raise MissingToolError("ffmpeg")
-
-    ffprobe = shutil.which("ffprobe")
-    if ffprobe is None:
-        raise MissingToolError("ffprobe")
-
-    gifsicle = _local_ou_path(gifsicle_path(bin_dir), "gifsicle")
-    oxipng = _local_ou_path(oxipng_path(bin_dir), "oxipng")
-
-    return Tools(ffmpeg=ffmpeg, ffprobe=ffprobe, gifsicle=gifsicle, oxipng=oxipng)
-
-
-def _local_ou_path(local: Path, nome: str) -> str | None:
-    """O binário portátil de `bin/`, senão o do PATH, senão None."""
-    return str(local) if local.is_file() else shutil.which(nome)
+    return Tools(
+        ffmpeg=ffmpeg,
+        gifsicle=_procurar("gifsicle", pastas),
+        oxipng=_procurar("oxipng", pastas),
+    )
 
 
 class DownloadError(Exception):

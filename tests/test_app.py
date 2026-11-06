@@ -1369,7 +1369,7 @@ def test_texto_descreve_o_arquivo_escrito_e_nao_o_pedido(
 
     monkeypatch.setattr(formato_webp, "codificar", webp_falso)
     r = compress_file(
-        src, Alvo.absoluto(10 * MB), Toggles(), Tools("ffmpeg", "ffprobe", None),
+        src, Alvo.absoluto(10 * MB), Toggles(), Tools("ffmpeg", None),
         converter_webp=True,
     )
 

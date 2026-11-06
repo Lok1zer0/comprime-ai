@@ -30,7 +30,7 @@ def _preparar(tmp_path, monkeypatch, gifsicle="gifsicle"):
         frame_count=30, duration=1.0, size_bytes=src.stat().st_size,
     )
     monkeypatch.setattr(mod, "probe", lambda p: info)
-    return mod, src, info, Tools("ffmpeg", "ffprobe", gifsicle)
+    return mod, src, info, Tools("ffmpeg", gifsicle)
 
 
 def test_nome_de_saida_padrao(tmp_path):
@@ -379,7 +379,7 @@ def test_nao_deixa_temporarios_para_tras(tools, gif_pequeno, tmp_path):
 # --- despacho por formato ------------------------------------------------
 
 # PNG, JPEG e WebP não usam ferramenta externa: tudo vai pelo Pillow.
-SEM_FERRAMENTAS = Tools("ffmpeg", "ffprobe", None, oxipng=None)
+SEM_FERRAMENTAS = Tools("ffmpeg", None, oxipng=None)
 
 _PILLOW = {
     Formato.GIF: "GIF", Formato.PNG: "PNG",
@@ -550,7 +550,7 @@ def test_converter_webp_so_vale_para_png_e_jpeg(tmp_path, monkeypatch, entrada):
 
     # alvo abaixo da entrada (5.000 B): acima dela só o sem perda é medido
     r = mod.compress_file(
-        src, Alvo.absoluto(4_000), TODOS, Tools("ffmpeg", "ffprobe", "gifsicle"),
+        src, Alvo.absoluto(4_000), TODOS, Tools("ffmpeg", "gifsicle"),
         converter_webp=True,
     )
 
@@ -798,7 +798,7 @@ def test_formato_sem_prefixo_so_tenta_o_degrau_zero_se_ja_cabe(
     monkeypatch.setattr(modulo, "codificar", falso)
 
     r = mod.compress_file(
-        src, Alvo.absoluto(10_000_000), TODOS, Tools("ffmpeg", "ffprobe", "gifsicle")
+        src, Alvo.absoluto(10_000_000), TODOS, Tools("ffmpeg", "gifsicle")
     )
 
     assert vistos == [modulo.TABELA[0]]
@@ -817,7 +817,7 @@ def test_formato_sem_prefixo_devolve_o_original_se_o_degrau_zero_nao_encolhe(
     monkeypatch.setattr(modulo, "codificar", falso)
 
     r = mod.compress_file(
-        src, Alvo.absoluto(10_000_000), TODOS, Tools("ffmpeg", "ffprobe", "gifsicle")
+        src, Alvo.absoluto(10_000_000), TODOS, Tools("ffmpeg", "gifsicle")
     )
 
     assert vistos == [modulo.TABELA[0]]
@@ -1050,7 +1050,7 @@ def test_webp_com_alvo_apertado_e_sem_conversao_reduz_de_verdade(tmp_path):
 
 from gifc.formatos import png as formato_png  # noqa: E402
 
-COM_OXIPNG = Tools("ffmpeg", "ffprobe", None, oxipng="oxipng")
+COM_OXIPNG = Tools("ffmpeg", None, oxipng="oxipng")
 
 
 def _curva_falsa(monkeypatch, modulo, tamanhos: list[int]) -> list[int]:
@@ -1357,7 +1357,7 @@ def test_o_alvo_relativo_e_resolvido_por_arquivo_dentro_do_compress_file(
         )
         monkeypatch.setattr(mod, "probe", lambda p, info=info: info)
         resultados.append(
-            mod.compress_file(src, alvo, TODOS, Tools("ffmpeg", "ffprobe", "gifsicle"))
+            mod.compress_file(src, alvo, TODOS, Tools("ffmpeg", "gifsicle"))
         )
 
     grande, pequeno = resultados

@@ -164,7 +164,7 @@ def test_o_png_esta_registrado_com_extensao_png():
 
 
 def test_comando_do_oxipng_usa_o_nivel_e_o_arquivo_de_saida():
-    tools = Tools("ffmpeg", "ffprobe", None, oxipng="oxipng")
+    tools = Tools("ffmpeg", None, oxipng="oxipng")
     cmd = build_oxipng_cmd(tools, Path("saida.png"), Params(None, 4, 100))
     assert cmd[0] == "oxipng"
     assert cmd[cmd.index("-o") + 1] == "4"
@@ -172,7 +172,7 @@ def test_comando_do_oxipng_usa_o_nivel_e_o_arquivo_de_saida():
 
 
 def test_comando_do_oxipng_sem_binario_levanta_encodeerror():
-    tools = Tools("ffmpeg", "ffprobe", None, oxipng=None)
+    tools = Tools("ffmpeg", None, oxipng=None)
     with pytest.raises(EncodeError, match="oxipng"):
         build_oxipng_cmd(tools, Path("saida.png"), Params(None, 4, 100))
 
@@ -185,7 +185,7 @@ def test_sem_oxipng_ainda_produz_um_png_valido(tmp_path):
     com `optimize`: a escada continua utilizável."""
     src = _png_de_interface(tmp_path / "ui.png")
     dst = tmp_path / "out" / "ui.png"
-    tools = Tools("ffmpeg", "ffprobe", None, oxipng=None)
+    tools = Tools("ffmpeg", None, oxipng=None)
     tamanho = codificar(src, dst, TABELA[2], probe(src), tools)
     assert tamanho == dst.stat().st_size
     with Image.open(dst) as img:
@@ -195,14 +195,14 @@ def test_sem_oxipng_ainda_produz_um_png_valido(tmp_path):
 
 def test_oxipng_inexistente_vira_encodeerror_em_portugues(tmp_path):
     src = _png_de_interface(tmp_path / "ui.png")
-    tools = Tools("ffmpeg", "ffprobe", None, oxipng=str(tmp_path / "nao-existe.exe"))
+    tools = Tools("ffmpeg", None, oxipng=str(tmp_path / "nao-existe.exe"))
     with pytest.raises(EncodeError, match="oxipng"):
         codificar(src, tmp_path / "out.png", TABELA[1], probe(src), tools)
 
 
 # --- escala, perfil de cor e alfa opaco (sem oxipng: testes de unidade) ---
 
-SEM_OXIPNG = Tools("ffmpeg", "ffprobe", None, oxipng=None)
+SEM_OXIPNG = Tools("ffmpeg", None, oxipng=None)
 
 
 def _cores(img: Image.Image) -> int:

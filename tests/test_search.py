@@ -235,7 +235,7 @@ def test_webp_sem_perda_menor_que_o_lossy_e_o_que_quebra_find_best(tmp_path):
 
     src = _captura_de_tela(tmp_path / "captura.png")
     info = probe(src)
-    ferramentas = Tools("ffmpeg", "ffprobe", None, oxipng=None)
+    ferramentas = Tools("ffmpeg", None, oxipng=None)
     tamanhos = [
         webp.codificar(src, tmp_path / f"t{i}.webp", p, info, ferramentas)
         for i, p in enumerate(webp.TABELA)
