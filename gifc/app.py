@@ -71,6 +71,12 @@ PRESETS = [("Discord 10", 10.0), ("WhatsApp 16", 16.0), ("5", 5.0), ("2", 2.0)]
 # pede (ver `App._dimensionar`).
 LARGURA_MINIMA = 580
 
+# Os quatro eventos que o tkdnd emite num widget registrado como alvo.
+# `dnd_bind` não valida o nome, então ligar fora desta lista é ligar em nada.
+EVENTOS_DE_ALVO = frozenset(
+    {"<<DropEnter>>", "<<DropPosition>>", "<<DropLeave>>", "<<Drop>>"}
+)
+
 # Pior caso de codificações por arquivo: o prefixo sem perda do formato (ver
 # `SEM_PERDA`), codificado um a um, mais a busca binária sobre o resto da
 # escada. GIF: 0 + floor(log2(18..20)) + 1 = 5. PNG: 2 + floor(log2(8)) + 1 = 6.
@@ -354,8 +360,13 @@ class App(TkinterDnD.Tk):
         self.drop.dnd_bind("<<Drop>>", self._ao_soltar)
         # Sem isto a área não dá sinal nenhum de que aceita o arquivo, e o
         # usuário solta no escuro.
-        self.drop.dnd_bind("<<DragEnter>>", self._ao_entrar_arrasto)
-        self.drop.dnd_bind("<<DragLeave>>", self._ao_sair_arrasto)
+        #
+        # Os nomes são `Drop*`, não `Drag*`: `dnd_bind` aceita qualquer
+        # sequência sem reclamar, inclusive uma que o tkdnd nunca emite — foi
+        # assim que `<<DragEnter>>` ficou ligado a nada e o realce não
+        # aparecia. `EVENTOS_DE_ALVO` abaixo existe para o teste conferir.
+        self.drop.dnd_bind("<<DropEnter>>", self._ao_entrar_arrasto)
+        self.drop.dnd_bind("<<DropLeave>>", self._ao_sair_arrasto)
 
         tema.botao_arredondado(
             raiz, "Escolher arquivos...", lamina=True, command=self._escolher

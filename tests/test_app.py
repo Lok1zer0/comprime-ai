@@ -1267,3 +1267,28 @@ def test_arrastar_por_cima_realca_a_area_e_volta_ao_sair(app):
     app._realcar_arrasto(False)
     assert app.drop.cget("background") == parado
     assert str(app.drop.cget("highlightbackground")) == tema.BORDA
+
+
+def test_a_area_de_arraste_so_liga_em_eventos_que_o_tkdnd_emite(app):
+    """`dnd_bind` aceita qualquer nome, inclusive um que nunca dispara.
+
+    Foi assim que o realce não funcionou: estava ligado a `<<DragEnter>>`,
+    que o tkdnd não emite. Verificado — uma sequência inventada aparece em
+    `bind()` igualzinho a uma real, então checar "existe binding" não basta.
+    O que vale é o nome estar entre os que a biblioteca de fato dispara.
+    """
+    from gifc.app import EVENTOS_DE_ALVO
+
+    ligados = {s for s in app.drop.bind() if s.startswith("<<")}
+    # <<DropTargetTypes>> é posto pelo próprio drop_target_register
+    ligados.discard("<<DropTargetTypes>>")
+    assert ligados, "a área de arraste não está ligada a nada"
+    invalidos = ligados - EVENTOS_DE_ALVO
+    assert not invalidos, f"ligado a evento que o tkdnd não emite: {sorted(invalidos)}"
+
+
+def test_a_area_de_arraste_liga_entrada_saida_e_soltura(app):
+    """Os três que a interface precisa: realçar, desrealçar e receber."""
+    ligados = set(app.drop.bind())
+    for evento in ("<<DropEnter>>", "<<DropLeave>>", "<<Drop>>"):
+        assert evento in ligados, f"faltou ligar {evento}"
