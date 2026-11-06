@@ -31,7 +31,6 @@ from gifc.ladder import ALAVANCAS, Toggles
 from gifc.probe import Formato
 from gifc.search import Attempt, Cancelled
 from gifc.tools import (
-    APP_DIR,
     BIN_DIR,
     GIFSICLE_URL,
     DownloadError,
@@ -39,6 +38,7 @@ from gifc.tools import (
     Tools,
     download_gifsicle,
     find_tools,
+    icone_path,
 )
 
 MB = 1024 * 1024
@@ -336,10 +336,10 @@ class App(TkinterDnD.Tk):
         tema.identidade_no_windows()
         self.title("Comprime Aí")
         tema.barra_escura(self)
-        # Devolve False enquanto o .ico não existir — ele é gerado no
-        # empacotamento. `APP_DIR` segue o executável quando congelado e a raiz
-        # do projeto fora dele (`PROJECT_ROOT` vem de `__file__`, não serve).
-        tema.icone_da_janela(self, APP_DIR / "assets" / "icone.ico")
+        # O `.ico` não é commitado: `icone_path` o procura ao lado do
+        # executável, dentro do bundle e no projeto, e `icone_da_janela` o
+        # deriva do logo se ainda não existir. Falha macio nos dois passos.
+        tema.icone_da_janela(self, icone_path())
 
         self.tools: Tools | None = None
         self.erro_ferramentas: str | None = None

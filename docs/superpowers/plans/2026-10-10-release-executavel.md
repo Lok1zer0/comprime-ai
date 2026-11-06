@@ -101,8 +101,8 @@ o build por causa disso é desproporcional.
 
 | Arquivo | Responsabilidade |
 |---|---|
-| `gifc/tools.py` | precedência de busca dentro do bundle; baixa o ffmpeg |
-| `assets/icone.ico` | **novo** — ícone do executável (commitado) |
+| `gifc/tools.py` | precedência de busca dentro do bundle; baixa o ffmpeg; acha o `.ico` |
+| `assets/icone.ico` | derivado de `assets/cai-logo.png`, **fora do git** (Tarefa 3, Step 0) |
 | `tools/gerar_icone.py` | **novo** — gera o `.ico` com Pillow |
 | `tools/build.py` | **novo** — orquestra o empacotamento e mede |
 | `comprime-ai.spec` | **novo** — configuração do PyInstaller |
@@ -423,7 +423,9 @@ causa disso é desproporcional.
 
 `tools/gerar_icone.py` e `assets/icone.ico` já existem: o dono do projeto
 forneceu `assets/cai-logo.png` e o ícone é derivado dele, nos tamanhos 16, 24,
-32, 48, 64, 128 e 256. O `.ico` está commitado para o build ser reprodutível.
+32, 48, 64, 128 e 256. ~~O `.ico` está commitado para o build ser
+reprodutível.~~ — **superado pelo Step 0**, que é decisão posterior: o `.ico`
+saiu do git e a lista de tamanhos passou a ter dez entradas.
 
 O script recorta por **limiar de alfa**, não por `getbbox()`: o logo traz uma
 sombra de alfa baixo que vai até as bordas, e `getbbox()` devolveria 99% da

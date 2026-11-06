@@ -121,6 +121,31 @@ def dirs_de_busca(bin_dir: Path) -> list[Path]:
     return pastas
 
 
+def icone_path(nome: str = "icone.ico") -> Path:
+    """O `.ico` do app, na primeira pasta que o tiver.
+
+    Mesma precedência das ferramentas, e pelo mesmo motivo: ao lado do
+    executável vem primeiro (quem troca o ícone de um pacote instalado manda
+    mais), depois o bundle. O segundo não é luxo — no `onedir` o PyInstaller
+    põe os `datas` em `_internal/`, que é o `sys._MEIPASS`, e **não** ao lado
+    do `.exe`; procurar só em `APP_DIR` deixaria o pacote sem ícone de janela.
+
+    Quando nada existe, devolve o caminho do projeto: é lá que
+    `tema._garantir_icone` escreve o arquivo derivado do logo.
+    """
+    candidatas = [APP_DIR]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidatas.append(Path(meipass))
+    desenvolvimento = PROJECT_ROOT / "assets" / nome
+    candidatas.append(PROJECT_ROOT)
+    for pasta in candidatas:
+        candidato = pasta / "assets" / nome
+        if candidato.is_file():
+            return candidato
+    return desenvolvimento
+
+
 def _procurar(nome: str, pastas: list[Path]) -> str | None:
     """O binário `nome` na primeira pasta que o tiver, senão no PATH."""
     for pasta in pastas:

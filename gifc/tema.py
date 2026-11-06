@@ -223,6 +223,31 @@ def identidade_no_windows(id_do_app: str = "Lok1zer0.ComprimeAi") -> bool:
         return False
 
 
+def _garantir_icone(caminho: Path) -> bool:
+    """True se o `.ico` está em `caminho`, derivando-o do logo se faltar.
+
+    O `.ico` não é commitado — `assets/cai-logo.png` é a fonte da verdade e o
+    arquivo é derivado dela no empacotamento. Num clone novo, portanto, ele não
+    existe, e sem gerar aqui o desenvolvimento ficaria com a pena do Python na
+    barra de tarefas até alguém rodar o build à mão.
+
+    Falha macio, por dois motivos distintos: no app congelado o `tools/` não
+    vem no pacote e o import não resolve (lá o `.ico` já veio pronto nos
+    `datas`), e fora dele a geração pode falhar por disco, permissão ou logo
+    ausente. Sem ícone o programa funciona igual.
+    """
+    if caminho.exists():
+        return True
+    try:
+        from tools.gerar_icone import gerar
+
+        gerar(destino=caminho)
+    except Exception:  # noqa: BLE001 - icone e enfeite, nao pode derrubar a janela
+        log.debug("nao consegui gerar o icone em %s", caminho, exc_info=True)
+        return False
+    return caminho.exists()
+
+
 def icone_da_janela(janela: tk.Misc, caminho: Path) -> bool:
     """Põe o `.ico` na janela pela API do Windows. True se conseguiu.
 
@@ -243,8 +268,8 @@ def icone_da_janela(janela: tk.Misc, caminho: Path) -> bool:
     """
     if sys.platform != "win32":
         return False
-    if not caminho.exists():
-        log.debug("icone %s nao existe", caminho)
+    if not _garantir_icone(caminho):
+        log.debug("sem icone em %s", caminho)
         return False
     try:
         import ctypes

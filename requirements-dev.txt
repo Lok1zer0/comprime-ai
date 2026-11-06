@@ -1,2 +1,21 @@
 -r requirements.txt
 pytest>=8.0
+# Versão fixada: o pacote que se testa tem de ser o pacote que o usuário
+# recebe, e o PyInstaller muda o que embute entre versões menores.
+#
+# E 6.22.3 em vez de 6.7.0 por dois motivos medidos nesta máquina:
+#
+# 1. O bootloader `runw.exe` do 6.7.0 -- o de `--noconsole`, que é o nosso --
+#    bate com a assinatura `Trojan:Win64/Malgent!MSR` do Defender, e a
+#    gravação de recursos no `.exe` morre com WinError 225. O `run.exe` do
+#    modo console NÃO bate, então um "oi mundo" de console constrói e dá a
+#    impressão errada de que o PyInstaller está bem: testar o empacotamento
+#    com script de console não vale como teste.
+# 2. O 6.22.3 repete a escrita no `.exe` até 20 vezes
+#    (`_append_data_to_exe failed on attempt #1 / 20: PermissionError`),
+#    em vez de desistir na primeira. É o que tolera o antivírus travar o
+#    arquivo durante o scan.
+#
+# O pacote construído foi varrido com o Defender (Start-MpScan, engine
+# 1.1.26100.4, sigs 1.463.160.0) e saiu limpo.
+pyinstaller==6.22.3

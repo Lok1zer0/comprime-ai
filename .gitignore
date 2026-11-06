@@ -19,3 +19,11 @@ venv/
 
 # Zips baixados em cache pelo build
 build/
+
+# Artefato do PyInstaller
+dist/
+
+# Ícone derivado de assets/cai-logo.png — binário commitado dessincroniza do
+# desenho. Quem precisa dele: `python tools/gerar_icone.py`, o empacotamento,
+# ou a primeira janela do app, que o gera sozinha.
+assets/icone.ico
