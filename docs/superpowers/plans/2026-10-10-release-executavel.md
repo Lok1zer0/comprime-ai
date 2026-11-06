@@ -264,11 +264,18 @@ Pontos que a spec fixa:
   Pillow se o teste acusar falta.
 - Ícone a partir de `assets/icone.ico`
 
-- [ ] **Step 1: Gerar o ícone**
+- [ ] **Step 1: Conferir o ícone (já feito, só validar)**
 
-`tools/gerar_icone.py` desenha com Pillow e grava `assets/icone.ico` nos
-tamanhos 16, 32, 48, 64, 128 e 256. O desenho é livre; algo legível em 16px.
-Commite o `.ico` para o build ser reprodutível.
+`tools/gerar_icone.py` e `assets/icone.ico` já existem: o dono do projeto
+forneceu `assets/cai-logo.png` e o ícone é derivado dele, nos tamanhos 16, 24,
+32, 48, 64, 128 e 256. O `.ico` está commitado para o build ser reprodutível.
+
+O script recorta por **limiar de alfa**, não por `getbbox()`: o logo traz uma
+sombra de alfa baixo que vai até as bordas, e `getbbox()` devolveria 99% da
+imagem, enquadrando o desenho a 56% da altura do ícone.
+
+Só confirme que o `.ico` chega ao executável e aparece na barra de tarefas.
+Se precisar regerar: `python tools/gerar_icone.py`.
 
 - [ ] **Step 2: Escrever `comprime-ai.spec` e construir nos dois modos**
 

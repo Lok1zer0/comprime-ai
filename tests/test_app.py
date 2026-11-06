@@ -543,14 +543,14 @@ def test_alavancas_de_gif_habilitadas_quando_ha_gif(app):
 
 def test_caixa_webp_desabilitada_quando_so_ha_gif(app):
     app._ajustar_alavancas({Formato.GIF})
-    assert _desabilitado(app.cb_webp)
+    assert _desabilitado(app.rb_webp)
 
 
 def test_caixa_webp_habilitada_quando_ha_png_ou_jpeg(app):
     for f in (Formato.PNG, Formato.JPEG):
         app._ajustar_alavancas({Formato.GIF})
         app._ajustar_alavancas({f})
-        assert not _desabilitado(app.cb_webp), f
+        assert not _desabilitado(app.rb_webp), f
 
 
 def test_caixa_webp_desligada_por_padrao(app):
@@ -574,19 +574,20 @@ def test_clicar_na_caixa_reavalia_as_alavancas_sem_nova_soltura(app):
     """O clique real dispara o `command` da caixa: se ele não estiver ligado,
     a paleta ficaria habilitada mas ignorada em silêncio."""
     app._ajustar_alavancas({Formato.PNG})
-    app.cb_webp.invoke()
+    app.rb_webp.invoke()
     try:
         assert app.tg_webp.get() is True
         assert _desabilitado(app.cb_palette)
     finally:
-        app.cb_webp.invoke()
+        # Radiobutton não alterna: para voltar, seleciona-se a outra opção.
+        app.rb_manter.invoke()
         app._ajustar_alavancas(set())
     assert not _desabilitado(app.cb_palette)
 
 
 def test_estado_inicial_tem_tudo_habilitado(app):
     app._ajustar_alavancas(set())
-    for cb in (app.cb_palette, app.cb_lossy, app.cb_scale, app.cb_fps, app.cb_webp):
+    for cb in (app.cb_palette, app.cb_lossy, app.cb_scale, app.cb_fps, app.rb_webp, app.rb_manter):
         assert not _desabilitado(cb)
 
 
@@ -643,7 +644,7 @@ def test_soltar_gif_depois_de_png_reabilita_as_alavancas(app, _lote_falso):
     soltar("b.gif")
     esperar()
     assert not _desabilitado(app.cb_fps)
-    assert _desabilitado(app.cb_webp)
+    assert _desabilitado(app.rb_webp)
 
 
 def test_a_caixa_webp_chega_ao_worker(app, _lote_falso):
@@ -1171,3 +1172,174 @@ def test_texto_descreve_o_arquivo_escrito_e_nao_o_pedido(
         assert ".webp" not in texto
         assert "nenhum degrau de WebP ficou menor" in texto
         assert "cópia mantida (PNG)" in texto
+
+
+# ---------- geometria: nada pode ser cortado ----------
+#
+# A Tarefa 8 cresceu a janela ao acrescentar o grupo da caixa de WebP e deixou
+# a altura 23px abaixo do que o conteúdo pede. Nada falhou, porque nenhum teste
+# media geometria — o defeito só apareceu quando um humano olhou a tela e viu
+# texto sumindo. Estes dois testes fecham essa classe.
+
+
+def _cortados(w) -> list[str]:
+    """Widgets que receberam menos espaço do que pediram."""
+    achados = []
+    for c in w.winfo_children():
+        pedido = (c.winfo_reqwidth(), c.winfo_reqheight())
+        alocado = (c.winfo_width(), c.winfo_height())
+        # alocado 1x1 significa "ainda não posicionado", não "cortado"
+        if alocado[0] > 1 and alocado[1] > 1:
+            if pedido[0] > alocado[0] or pedido[1] > alocado[1]:
+                texto = ""
+                try:
+                    texto = f" {c.cget('text')!r}"
+                except Exception:
+                    pass
+                achados.append(
+                    f"{c.winfo_class()}{texto}: pede {pedido[0]}x{pedido[1]}, "
+                    f"recebe {alocado[0]}x{alocado[1]}"
+                )
+        achados.extend(_cortados(c))
+    return achados
+
+
+def test_a_janela_cabe_no_proprio_conteudo(app):
+    """A geometria precisa comportar o que o layout pede, senão texto some."""
+    app.update_idletasks()
+    assert app.winfo_reqheight() <= app.winfo_height(), (
+        f"a janela pede {app.winfo_reqwidth()}x{app.winfo_reqheight()} "
+        f"mas tem {app.winfo_width()}x{app.winfo_height()}"
+    )
+    assert app.winfo_reqwidth() <= app.winfo_width()
+
+
+def test_nenhum_widget_e_cortado(app):
+    """Nenhum widget recebe menos espaço do que pede — é assim que o texto
+    do botão 'WhatsApp 16' virava 'WhatsApp 1...' sem nada falhar."""
+    app.update_idletasks()
+    cortados = _cortados(app)
+    assert not cortados, "widgets cortados:\n  " + "\n  ".join(cortados)
+
+
+# ---------- área de arraste e log ----------
+
+
+def test_log_vazio_mostra_o_que_vai_aparecer_ali(app):
+    """Painel em branco parece defeito; uma linha de espera parece intenção."""
+    app._limpar_log()
+    linhas = [app.log.item(i, "text") for i in app.log.get_children()]
+    assert len(linhas) == 1
+    assert "aparece aqui" in linhas[0]
+
+
+def test_a_primeira_mensagem_substitui_a_linha_de_espera(app):
+    app._limpar_log()
+    app._log("primeira mensagem de verdade")
+    linhas = [app.log.item(i, "text") for i in app.log.get_children()]
+    assert linhas == ["primeira mensagem de verdade"]
+
+
+def test_a_linha_de_espera_volta_ao_limpar(app):
+    app._limpar_log()
+    app._log("alguma coisa")
+    app._limpar_log()
+    linhas = [app.log.item(i, "text") for i in app.log.get_children()]
+    assert len(linhas) == 1 and "aparece aqui" in linhas[0]
+
+
+def test_a_linha_de_espera_nao_se_duplica(app):
+    app._limpar_log()
+    app._mostrar_vazio()
+    app._mostrar_vazio()
+    assert len(app.log.get_children()) == 1
+
+
+def test_arrastar_por_cima_realca_a_area_e_volta_ao_sair(app):
+    """Sem retorno visual o usuário solta o arquivo no escuro."""
+    from gifc import tema
+
+    parado = app.drop.cget("background")
+    app._realcar_arrasto(True)
+    por_cima = app.drop.cget("background")
+    assert por_cima != parado
+    assert str(app.drop.cget("highlightbackground")) == tema.LAMINA
+
+    app._realcar_arrasto(False)
+    assert app.drop.cget("background") == parado
+    assert str(app.drop.cget("highlightbackground")) == tema.BORDA
+
+
+def test_a_area_de_arraste_so_liga_em_eventos_que_o_tkdnd_emite(app):
+    """`dnd_bind` aceita qualquer nome, inclusive um que nunca dispara.
+
+    Foi assim que o realce não funcionou: estava ligado a `<<DragEnter>>`,
+    que o tkdnd não emite. Verificado — uma sequência inventada aparece em
+    `bind()` igualzinho a uma real, então checar "existe binding" não basta.
+    O que vale é o nome estar entre os que a biblioteca de fato dispara.
+    """
+    from gifc.app import EVENTOS_DE_ALVO
+
+    ligados = {s for s in app.drop.bind() if s.startswith("<<")}
+    # <<DropTargetTypes>> é posto pelo próprio drop_target_register
+    ligados.discard("<<DropTargetTypes>>")
+    assert ligados, "a área de arraste não está ligada a nada"
+    invalidos = ligados - EVENTOS_DE_ALVO
+    assert not invalidos, f"ligado a evento que o tkdnd não emite: {sorted(invalidos)}"
+
+
+def test_a_area_de_arraste_liga_entrada_saida_e_soltura(app):
+    """Os três que a interface precisa: realçar, desrealçar e receber."""
+    ligados = set(app.drop.bind())
+    for evento in ("<<DropEnter>>", "<<DropLeave>>", "<<Drop>>"):
+        assert evento in ligados, f"faltou ligar {evento}"
+
+
+# ---------- formato de saída: as duas opções são exclusivas ----------
+
+
+def test_manter_formato_original_vem_marcado(app):
+    """Já era o comportamento padrão; o que faltava era o usuário ver."""
+    assert app.tg_webp.get() is False
+
+
+def test_as_duas_opcoes_de_saida_sao_exclusivas(app):
+    """Com checkbox dava para desmarcar as duas ou marcar as duas, e nenhum
+    desses estados existe. Compartilhar a variável resolve por construção."""
+    app.rb_webp.invoke()
+    assert app.tg_webp.get() is True
+    app.rb_manter.invoke()
+    assert app.tg_webp.get() is False
+    app.rb_webp.invoke()
+    assert app.tg_webp.get() is True
+    app.rb_manter.invoke()
+
+
+def test_sem_conversao_possivel_as_duas_opcoes_travam(app):
+    """Só GIF no lote: manter é o único estado válido, então deixar uma das
+    duas clicável ofereceria uma escolha que não existe."""
+    app._ajustar_alavancas({Formato.GIF})
+    assert _desabilitado(app.rb_webp)
+    assert _desabilitado(app.rb_manter)
+    app._ajustar_alavancas({Formato.PNG})
+    assert not _desabilitado(app.rb_webp)
+    assert not _desabilitado(app.rb_manter)
+
+
+def test_o_fundo_atras_das_caixas_casa_com_o_badge_do_titulo(app):
+    """O badge do título de cada caixa é desenhado em FUNDO, porque o tema
+    assume que as caixas moram sobre um frame dessa cor.
+
+    Com a raiz no TFrame padrão (PAINEL) o badge aparecia como uma faixa mais
+    escura ao lado do texto, e a janela inteira ficava chapada — o tema tem
+    três níveis de profundidade e esse pulava o primeiro.
+    """
+    from gifc import tema
+
+    raizes = [w for w in app.winfo_children() if w.winfo_class() == "TFrame"]
+    assert raizes, "a janela não tem frame raiz"
+    fundo = app.estilo.lookup(raizes[0].cget("style") or "TFrame", "background")
+    assert fundo == tema.FUNDO, (
+        f"o frame raiz está em {fundo}, mas o badge do título é desenhado em "
+        f"{tema.FUNDO} — a faixa escura reaparece"
+    )

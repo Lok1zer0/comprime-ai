@@ -19,17 +19,19 @@ import threading
 from collections.abc import Callable, Iterable
 from dataclasses import fields
 from pathlib import Path
+import tkinter as tk
 from tkinter import BooleanVar, StringVar, messagebox, ttk
 
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
-from gifc import formatos
+from gifc import formatos, tema
 from gifc.compress import CompressResult, compress_file
 from gifc.ladder import ALAVANCAS, Toggles
 from gifc.probe import Formato
 from gifc.search import Attempt, Cancelled
 from gifc.tools import (
     BIN_DIR,
+    PROJECT_ROOT,
     GIFSICLE_URL,
     DownloadError,
     MissingToolError,
@@ -64,6 +66,16 @@ _ROTULO_FORMATO: dict[Formato, str] = {
 _CONVERSIVEIS = frozenset({Formato.PNG, Formato.JPEG})
 
 PRESETS = [("Discord 10", 10.0), ("WhatsApp 16", 16.0), ("5", 5.0), ("2", 2.0)]
+
+# Piso de largura da janela. A altura nunca é fixada: sai do que o layout
+# pede (ver `App._dimensionar`).
+LARGURA_MINIMA = 580
+
+# Os quatro eventos que o tkdnd emite num widget registrado como alvo.
+# `dnd_bind` não valida o nome, então ligar fora desta lista é ligar em nada.
+EVENTOS_DE_ALVO = frozenset(
+    {"<<DropEnter>>", "<<DropPosition>>", "<<DropLeave>>", "<<Drop>>"}
+)
 
 # Pior caso de codificações por arquivo: o prefixo sem perda do formato (ver
 # `SEM_PERDA`), codificado um a um, mais a busca binária sobre o resto da
@@ -260,9 +272,16 @@ def _texto_resultado(r: CompressResult, converteu_webp: bool = False) -> str:
 class App(TkinterDnD.Tk):
     def __init__(self) -> None:
         super().__init__()
+        # O estilo vem antes dos widgets: `aplica` troca o tema ttk para
+        # `clam`, e o tema em vigor decide as métricas de cada widget.
+        self.estilo = tema.aplica(self)
+        tema.identidade_no_windows()
         self.title("Comprime Aí")
-        self.geometry("580x720")
-        self.minsize(480, 600)
+        tema.barra_escura(self)
+        # Devolve False enquanto o .ico não existir — ele é gerado no
+        # empacotamento. Quando `PROJECT_ROOT` passar a seguir o executável
+        # congelado, este caminho acompanha sozinho.
+        tema.icone_da_janela(self, PROJECT_ROOT / "assets" / "icone.ico")
 
         self.tools: Tools | None = None
         self.erro_ferramentas: str | None = None
@@ -291,44 +310,91 @@ class App(TkinterDnD.Tk):
         self.tg_webp = BooleanVar(value=False)
 
         self._montar()
+        self._dimensionar()
         self.protocol("WM_DELETE_WINDOW", self._ao_fechar)
         self._checar_ferramentas()
         self._after_id = self.after(100, self._drenar_fila)
 
+    def _dimensionar(self) -> None:
+        """Dimensiona a janela a partir do que o layout realmente pede.
+
+        Tamanho fixo em número mágico foi o que cortou texto antes: a janela
+        era 580x720 e o conteúdo pedia 743, então o log encolhia e o rótulo
+        do preset sumia. Perguntar ao próprio layout não tem como divergir
+        quando alguém acrescenta um widget.
+
+        O mínimo é o tamanho pedido pela mesma razão: uma janela que o
+        usuário pode encolher abaixo do conteúdo volta a cortar.
+        """
+        self.update_idletasks()
+        largura = max(self.winfo_reqwidth(), LARGURA_MINIMA)
+        altura = self.winfo_reqheight()
+        self.geometry(f"{largura}x{altura}")
+        self.minsize(largura, altura)
+
     # ---------- construção da interface ----------
 
     def _montar(self) -> None:
-        raiz = ttk.Frame(self, padding=12)
+        # `Fundo.TFrame` e não o TFrame padrão: o tema trabalha com três
+        # níveis de profundidade — janela (FUNDO), caixa (PAINEL), campo
+        # (CAMPO) — e o padrão é PAINEL. Com a raiz em PAINEL a janela fica
+        # chapada, e o badge do título de cada caixa, que é desenhado em
+        # FUNDO, aparece como uma faixa mais escura ao lado do texto.
+        raiz = ttk.Frame(self, padding=12, style="Fundo.TFrame")
         raiz.pack(fill="both", expand=True)
 
-        self.drop = ttk.Label(
+        # Continua sendo um ttk.Label de propósito. O `tkdnd` é a parte
+        # mais frágil do app e a única sem teste automático; trocar a classe
+        # do widget arriscaria o que é mais difícil de verificar. O que muda
+        # é só a aparência e a resposta ao arrasto.
+        self.drop = tk.Label(
             raiz,
-            text="Arraste imagens aqui (GIF, PNG, JPEG ou WebP)",
-            anchor="center",
-            relief="ridge",
-            padding=30,
+            text="Arraste imagens aqui\nGIF · PNG · JPEG · WebP",
+            justify="center",
+            background=tema.PAINEL,
+            foreground=tema.APAGADO,
+            font=(tema.FONTE_UI, 11),
+            highlightthickness=2,
+            highlightbackground=tema.BORDA,
+            highlightcolor=tema.BORDA,
+            padx=20,
+            pady=34,
         )
         self.drop.pack(fill="x")
         self.drop.drop_target_register(DND_FILES)
         self.drop.dnd_bind("<<Drop>>", self._ao_soltar)
+        # Sem isto a área não dá sinal nenhum de que aceita o arquivo, e o
+        # usuário solta no escuro.
+        #
+        # Os nomes são `Drop*`, não `Drag*`: `dnd_bind` aceita qualquer
+        # sequência sem reclamar, inclusive uma que o tkdnd nunca emite — foi
+        # assim que `<<DragEnter>>` ficou ligado a nada e o realce não
+        # aparecia. `EVENTOS_DE_ALVO` abaixo existe para o teste conferir.
+        self.drop.dnd_bind("<<DropEnter>>", self._ao_entrar_arrasto)
+        self.drop.dnd_bind("<<DropLeave>>", self._ao_sair_arrasto)
 
-        ttk.Button(raiz, text="Escolher arquivos...", command=self._escolher).pack(
-            fill="x", pady=(6, 12)
-        )
+        tema.botao_arredondado(
+            raiz, "Escolher arquivos...", lamina=True, command=self._escolher
+        ).pack(fill="x", pady=(6, 12))
 
-        alvo = ttk.LabelFrame(raiz, text="Tamanho-alvo", padding=8)
+        alvo = tema.cria_labelframe(raiz, "Tamanho-alvo", padding=8)
         alvo.pack(fill="x")
         linha = ttk.Frame(alvo)
         linha.pack(fill="x")
-        ttk.Entry(linha, textvariable=self.alvo_mb, width=8).pack(side="left")
+        tema.campo_arredondado(
+            linha, textvariable=self.alvo_mb, width=8
+        ).pack(side="left")
         ttk.Label(linha, text="MB").pack(side="left", padx=(4, 12))
+        # Sem `width=` fixo: era `width=11` em caracteres, e "WhatsApp 16"
+        # não cabia com o padding — saía "WhatsApp 1". Cada botão se mede
+        # pelo próprio texto.
         for rotulo, valor in PRESETS:
-            ttk.Button(
-                linha, text=rotulo, width=11,
+            tema.botao_arredondado(
+                linha, rotulo,
                 command=lambda v=valor: self.alvo_mb.set(str(v)),
             ).pack(side="left", padx=2)
 
-        alav = ttk.LabelFrame(raiz, text="Alavancas permitidas", padding=8)
+        alav = tema.cria_labelframe(raiz, "Alavancas permitidas", padding=8)
         alav.pack(fill="x", pady=12)
         # Uma caixa por alavanca de `ladder.ALAVANCAS`, guardada pela mesma
         # chave: é por ela que `_ajustar_alavancas` habilita e desabilita.
@@ -347,26 +413,45 @@ class App(TkinterDnD.Tk):
         self.cb_scale = self._caixas_alavanca["scale"]
         self.cb_fps = self._caixas_alavanca["fps"]
 
-        saida = ttk.LabelFrame(raiz, text="Formato de saída", padding=8)
+        saida = tema.cria_labelframe(raiz, "Formato de saída", padding=8)
         saida.pack(fill="x", pady=(0, 12))
-        self.cb_webp = ttk.Checkbutton(
-            saida,
-            text="Converter para WebP (PNG e JPEG)",
+        # Duas opções exclusivas, não duas caixas: com checkbox o usuário
+        # poderia desmarcar as duas ou marcar as duas, e nenhum desses
+        # estados existe. Radiobutton sobre a MESMA variável dá exclusão
+        # mútua de graça, e `tg_webp` segue sendo a BooleanVar que o resto
+        # do código já lê.
+        #
+        # "Manter formato original" já era o que acontecia por padrão; o que
+        # faltava era o usuário poder ver isso.
+        linha_saida = ttk.Frame(saida)
+        linha_saida.pack(fill="x")
+        self.rb_manter = ttk.Radiobutton(
+            linha_saida,
+            text="Manter formato original",
             variable=self.tg_webp,
+            value=False,
             command=self._ao_mudar_conversao,
         )
-        self.cb_webp.pack(anchor="w")
+        self.rb_manter.pack(side="left", padx=(0, 24))
+        self.rb_webp = ttk.Radiobutton(
+            linha_saida,
+            text="Converter para WebP (PNG e JPEG)",
+            variable=self.tg_webp,
+            value=True,
+            command=self._ao_mudar_conversao,
+        )
+        self.rb_webp.pack(side="left")
 
         # O rodapé é empacotado ANTES do log, grudado embaixo: com a janela
         # menor que o pedido, é o log que encolhe, não os botões que somem.
         rodape = ttk.Frame(raiz)
         rodape.pack(side="bottom", fill="x", pady=(8, 0))
-        self.btn_cancelar = ttk.Button(
-            rodape, text="Cancelar", command=self._cancelar, state="disabled"
+        self.btn_cancelar = tema.botao_arredondado(
+            rodape, "Cancelar", command=self._cancelar, state="disabled"
         )
         self.btn_cancelar.pack(side="left")
-        self.btn_pasta = ttk.Button(
-            rodape, text="Abrir pasta", command=self._abrir_pasta, state="disabled"
+        self.btn_pasta = tema.botao_arredondado(
+            rodape, "Abrir pasta", command=self._abrir_pasta, state="disabled"
         )
         self.btn_pasta.pack(side="right")
 
@@ -376,10 +461,14 @@ class App(TkinterDnD.Tk):
         self.status = ttk.Label(raiz, text="Pronto.", anchor="w")
         self.status.pack(fill="x", pady=(6, 4))
 
+        # 12 linhas deixavam metade da janela vazia antes de haver o que
+        # mostrar. 6 cabem o bastante para acompanhar um arquivo, e a área
+        # cresce quando o usuário aumenta a janela.
         self.log = ttk.Treeview(
-            raiz, columns=("msg",), show="tree", height=12, selectmode="none"
+            raiz, columns=("msg",), show="tree", height=6, selectmode="none"
         )
         self.log.pack(fill="both", expand=True)
+        self._mostrar_vazio()
 
 
     # ---------- ferramentas ----------
@@ -421,7 +510,25 @@ class App(TkinterDnD.Tk):
 
     # ---------- entrada de arquivos ----------
 
+    def _realcar_arrasto(self, ativo: bool) -> None:
+        """Pinta a área de arraste conforme o arquivo está ou não por cima."""
+        self.drop.configure(
+            background=tema.CAMPO if ativo else tema.PAINEL,
+            foreground=tema.LAMINA if ativo else tema.APAGADO,
+            highlightbackground=tema.LAMINA if ativo else tema.BORDA,
+            highlightcolor=tema.LAMINA if ativo else tema.BORDA,
+        )
+
+    def _ao_entrar_arrasto(self, evento) -> str:
+        self._realcar_arrasto(True)
+        return evento.action
+
+    def _ao_sair_arrasto(self, evento) -> str:
+        self._realcar_arrasto(False)
+        return evento.action
+
     def _ao_soltar(self, evento) -> None:
+        self._realcar_arrasto(False)
         caminhos = [Path(p) for p in self.splitlist(evento.data)]
         self._processar(caminhos)
 
@@ -483,7 +590,7 @@ class App(TkinterDnD.Tk):
         self.trabalhando = True
         self.cancelar.clear()
         self.btn_cancelar.config(state="normal")
-        self.log.delete(*self.log.get_children())
+        self._limpar_log()
         self._iniciar_lote(len(arquivos))
 
         self._thread = threading.Thread(
@@ -510,9 +617,12 @@ class App(TkinterDnD.Tk):
         aplicaveis = _alavancas_aplicaveis(self._entradas, converter)
         for chave, caixa in self._caixas_alavanca.items():
             caixa.state(["!disabled" if chave in aplicaveis else "disabled"])
-        self.cb_webp.state(
-            ["!disabled" if _conversao_possivel(self._entradas) else "disabled"]
-        )
+        # O par inteiro trava junto: sem conversão possível (só GIF), manter
+        # é o único estado válido, e deixar uma das duas clicável sugeriria
+        # uma escolha que não existe.
+        estado = "!disabled" if _conversao_possivel(self._entradas) else "disabled"
+        self.rb_manter.state([estado])
+        self.rb_webp.state([estado])
 
     # ---------- thread de trabalho ----------
     #
@@ -591,7 +701,30 @@ class App(TkinterDnD.Tk):
         elif tipo == "fim":
             self._terminar()
 
+    MARCA_VAZIO = "_vazio_"
+
+    def _mostrar_vazio(self) -> None:
+        """Enche o log com uma linha apagada enquanto não há nada a mostrar.
+
+        Um painel em branco parece defeito; uma linha dizendo o que vai
+        aparecer ali parece intenção.
+        """
+        if not self.log.get_children():
+            self.log.insert(
+                "", "end", iid=self.MARCA_VAZIO,
+                text="   O progresso de cada arquivo aparece aqui.",
+                tags=("vazio",),
+            )
+            self.log.tag_configure("vazio", foreground=tema.APAGADO)
+
+    def _limpar_log(self) -> None:
+        """Esvazia o log e devolve a linha de espera."""
+        self.log.delete(*self.log.get_children())
+        self._mostrar_vazio()
+
     def _log(self, texto: str) -> None:
+        if self.log.exists(self.MARCA_VAZIO):
+            self.log.delete(self.MARCA_VAZIO)
         item = self.log.insert("", "end", text=texto)
         self.log.see(item)
 
