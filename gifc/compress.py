@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import math
 import shutil
 import tempfile
@@ -65,6 +66,97 @@ class Alvo:
 
 class CompressError(Exception):
     """Nenhum degrau da escada produziu um resultado utilizável."""
+
+
+MSG_NOME_LONGO = (
+    "O nome do arquivo comprimido não cabe no limite do Windows. Renomeie o "
+    "arquivo com um nome mais curto, ou mova-o para uma pasta de caminho mais "
+    "curto."
+)
+
+# Os códigos com que o Windows recusa um caminho pela forma ou pelo tamanho.
+# Medidos nesta máquina: criar um componente de 270 caracteres dá EINVAL, e
+# mover para um de 263 dá ERROR_INVALID_NAME.
+_ERRO_INVALID_NAME = 123
+_ERRO_FILENAME_EXCED_RANGE = 206
+_ERRO_BUFFER_OVERFLOW = 111
+_WINERROS_DE_NOME = frozenset(
+    {_ERRO_INVALID_NAME, _ERRO_FILENAME_EXCED_RANGE, _ERRO_BUFFER_OVERFLOW}
+)
+
+
+def _e_erro_de_nome(exc: OSError) -> bool:
+    """Se `exc` é o sistema recusando o CAMINHO, e não negando permissão.
+
+    O `winerror` vem primeiro e não é redundante: o Python mapeia
+    `ERROR_FILENAME_EXCED_RANGE` (206) para `ENOENT`, **o mesmo errno de
+    "a pasta não existe"** (3). Só o código do Windows distingue os dois, e
+    confundi-los manda a pessoa renomear um arquivo quando o problema era a
+    pasta, ou o contrário. Os outros dois caem em `EINVAL`, mas estão na lista
+    porque depender desse mapeamento seria depender de detalhe do CPython.
+    """
+    if getattr(exc, "winerror", None) in _WINERROS_DE_NOME:
+        return True
+    return exc.errno in (errno.ENAMETOOLONG, errno.EINVAL)
+
+
+def _mensagem_de_destino(dst: Path, exc: OSError) -> str:
+    """O que dizer ao usuário quando o destino não aceita ser escrito.
+
+    Duas mensagens e não uma: dizer "o nome não cabe" sobre uma pasta sem
+    permissão manda a pessoa renomear um arquivo que não tem nada de errado.
+    """
+    if _e_erro_de_nome(exc):
+        return MSG_NOME_LONGO
+    return (
+        f"Não foi possível criar o arquivo comprimido em {dst.parent}: "
+        f"{exc.strerror or exc}"
+    )
+
+
+def _sondar_destino(dst: Path) -> None:
+    """Confirma que `dst` pode ser criado, criando e apagando um arquivo vazio.
+
+    **Sonda, não calcula.** O limite de caminho do Windows varia com a chave
+    `LongPathsEnabled` do registro, com o sistema de arquivos e entre caminho
+    local e UNC; qualquer número embutido aqui estaria errado em alguma
+    máquina. Perguntar ao sistema de arquivos é a única resposta que vale para
+    a máquina em que o programa está rodando.
+
+    Chamada ANTES de codificar. Sem isso o usuário espera a compressão inteira
+    para então receber o erro — num GIF grande, meio minuto jogado fora antes
+    de saber que o nome não cabe.
+
+    Um detalhe que torna a sondagem indispensável em vez de redundante:
+    `Path.exists()` devolve `False` calado num caminho inválido, então o laço
+    de `unique_output_path` nem roda e ele entrega o caminho impossível como
+    se estivesse livre.
+    """
+    try:
+        with dst.open("xb"):
+            pass
+    except FileExistsError:
+        # Alguém criou o arquivo entre `unique_output_path` e aqui. O caminho é
+        # válido, que é o que a sondagem quer saber -- e apagar o arquivo de
+        # outra pessoa seria perda de dado causada por uma verificação.
+        return
+    except OSError as exc:
+        raise CompressError(_mensagem_de_destino(dst, exc)) from exc
+    dst.unlink(missing_ok=True)
+
+
+def _escrever_destino(dst: Path, escrever: Callable[[], object]) -> None:
+    """Executa a escrita final, traduzindo `OSError` em `CompressError`.
+
+    Rede de segurança: a sondagem já recusou o destino impossível antes de
+    codificar, então aqui só chega corrida — alguém mexeu na pasta no meio do
+    caminho. Uma rede que quase nunca dispara custa nada, e sem ela a falha
+    chegaria à interface como texto do sistema.
+    """
+    try:
+        escrever()
+    except OSError as exc:
+        raise CompressError(_mensagem_de_destino(dst, exc)) from exc
 
 
 @dataclass
@@ -301,6 +393,16 @@ def compress_file(
 
     saida = formatos.formato_de_saida(info.formato, converter_webp)
     modulo = formatos.para(saida)
+
+    # Antes de qualquer codificação: o destino aceita ser escrito? Os DOIS
+    # destinos possíveis, porque numa conversão que não rende o original é
+    # copiado com a extensão da entrada, não com a da saída pedida -- e
+    # sondar só um deixaria o outro falhar no fim, que é o que esta sondagem
+    # existe para evitar.
+    possiveis = [saida] if saida is info.formato else [saida, info.formato]
+    for formato_possivel in possiveis:
+        _sondar_destino(unique_output_path(src, formato_possivel))
+
     escada, n_prefixo = montar_escada(saida, info, toggles, tools)
     # Três situações, pelo alvo do USUÁRIO contra a entrada e por haver ou não
     # conversão de formato:
@@ -374,7 +476,7 @@ def compress_file(
         # (`resultado is None`: GIF e JPEG) ou cujo sem perda não a encolhe.
         if resultado is None or resultado.size_bytes >= info.size_bytes:
             dst = unique_output_path(src, info.formato)
-            shutil.copy2(src, dst)
+            _escrever_destino(dst, lambda: shutil.copy2(src, dst))
             return CompressResult(
                 src=src, dst=dst,
                 original_bytes=info.size_bytes,
@@ -389,7 +491,7 @@ def compress_file(
 
         vencedor = _try_path(tmpdir, resultado.index, saida)
         dst = unique_output_path(src, saida)
-        shutil.move(str(vencedor), str(dst))
+        _escrever_destino(dst, lambda: shutil.move(str(vencedor), str(dst)))
         return CompressResult(
             src=src, dst=dst,
             original_bytes=info.size_bytes,

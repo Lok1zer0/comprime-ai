@@ -410,16 +410,6 @@ def test_comprime_em_caminho_com_acentos_e_espacos(
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Review Focus 2 não está implementado: o destino que estoura o limite "
-        "do sistema sai como OSError cru (WinError 123, texto do Windows) e a "
-        "interface o mostra como está. Corrigir é mexer em gifc/compress.py, "
-        "o que o Step 3 da Tarefa 4 manda reportar antes de fazer. Quando "
-        "estiver corrigido, este marcador tem de sair."
-    ),
-)
 def test_caminho_longo_proximo_do_limite_do_windows(
     tmp_path: Path, ferramentas_do_pacote: Tools, sem_path: None
 ) -> None:
@@ -433,26 +423,26 @@ def test_caminho_longo_proximo_do_limite_do_windows(
     funcionam nos quatro formatos, então um teste "perto dos 260" passaria
     aqui e esconderia o defeito.
 
-    Duas saídas são aceitáveis: um erro nosso, em português, ou escrever o
-    arquivo com um nome encurtado. `OSError` cru não é.
+    Este é o teste de pacote; o mesmo defeito tem cobertura mais fina em
+    `tests/test_compress.py` (a sondagem do destino, a ordem em relação à
+    codificação e as duas redes de segurança). Aqui o que se verifica é que
+    o comportamento chega inteiro ao caminho que usa os binários do `.exe`.
     """
     nome = "a" * (255 - len(SUFIXO) - len(".png") + 1)
     src = tmp_path / f"{nome}.png"
     captura_de_tela(200, 150).save(src, "PNG", optimize=True)
     assert len(src.name) <= 255, "a entrada tem de ser aceitável"
 
-    try:
-        resultado = compress_file(
-            src, Alvo.relativo(50), Toggles(), ferramentas_do_pacote
-        )
-    except CompressError as exc:
-        assert "nome" in str(exc).lower() or "caminho" in str(exc).lower(), (
-            f"erro nosso, mas sem dizer o que fazer: {exc}"
-        )
-    except OSError as exc:
-        pytest.fail(f"OSError cru chegaria à interface: [{type(exc).__name__}] {exc}")
-    else:
-        assert resultado.dst.is_file()
+    with pytest.raises(CompressError) as erro:
+        compress_file(src, Alvo.relativo(50), Toggles(), ferramentas_do_pacote)
+    msg = str(erro.value)
+    assert "mais curto" in msg, f"não diz o que fazer: {msg}"
+    assert "WinError" not in msg and "Errno" not in msg, (
+        f"texto do sistema vazou para a interface: {msg}"
+    )
+    assert not list(tmp_path.glob(f"*{SUFIXO}*")), (
+        "sobrou arquivo de destino depois da falha"
+    )
 
 
 # --------------------------------------------------------- o executável abre --

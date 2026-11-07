@@ -47,10 +47,14 @@ comando explícito antes de qualquer coisa depender disso.
 2. **Caminho perto do limite de 260 caracteres do Windows** — o sufixo
    `_comprimido` cresce o nome e pode gerar um caminho que o sistema recusa.
    O esperado é erro claro em português, não `OSError` cru na interface.
-   (Tarefa 4)
-3. **Rodar o `.exe` de dentro do zip, sem extrair** — em `onedir` falha
-   procurando `_internal`. É o erro que o leigo comete primeiro. (Tarefa 4,
-   e a instrução em destaque na Tarefa 5)
+   (Tarefa 4) — **resolvido na Tarefa 4:** `compress_file` sonda o destino
+   antes de codificar e levanta `CompressError` com mensagem acionável. O
+   gatilho medido não foi o caminho inteiro e sim o **componente** (255
+   caracteres no NTFS), porque a máquina de build tem `LongPathsEnabled=1`.
+3. ~~**Rodar o `.exe` de dentro do zip, sem extrair** — em `onedir` falha
+   procurando `_internal`.~~ **Sem efeito:** a medição da Tarefa 3 escolheu
+   `onefile`, então o asset é um `.exe` único — não há pasta para extrair nem
+   `_internal` para procurar. **Não entra no README da Tarefa 5.**
 4. **Máquina sem Visual C++ Redistributable** — binários MSVC podem exigir
    runtime ausente numa máquina limpa. (checklist manual)
 5. **Pillow sem seus `.pyd` de codec** — o PyInstaller às vezes perde plugins
@@ -494,6 +498,20 @@ git commit -m "Empacotamento com PyInstaller, ícone e script de build"
 Marcados `integration`, pulam com mensagem clara quando `dist/` não existe,
 para a suíte seguir verde numa máquina que não construiu o pacote.
 
+> **Esta tarefa mudou de forma ao ser executada, porque a Tarefa 3 escolheu
+> `onefile`.** Os testes abaixo foram escritos supondo `onedir`, em que os
+> binários, o `tkdnd` e os `.pyd` do Pillow ficam como arquivos em
+> `dist/comprime-ai/_internal/`. No `onefile` nada disso existe como arquivo:
+> `dist/` tem só o `.exe` e o conteúdo aparece extraído no `_MEIPASS` apenas
+> enquanto o programa roda.
+>
+> O que foi feito: `tests/test_pacote.py` abre o arquivo que o PyInstaller
+> embutiu no `.exe` (`CArchiveReader`), confere o TOC e **extrai** para uma
+> pasta temporária o que precisa — inclusive remontando o Pillow a partir dos
+> `.pyd` do arquivo embutido mais os módulos do PYZ. Assim cada afirmação é
+> sobre o artefato da release. A alternativa de construir o `onedir` e testar
+> a árvore dele provaria coisas sobre um arquivo que ninguém vai baixar.
+
 - [ ] **Step 1: Escrever os testes que falham**
 
 ```python
@@ -510,8 +528,9 @@ def test_pillow_tem_os_codecs_no_pacote()
 
 @pytest.mark.parametrize("formato", list(Formato))
 def test_comprime_cada_formato_usando_so_os_binarios_do_pacote(formato, tmp_path)
-    # Tools apontando para os binários DENTRO de dist/, PATH vazio no
-    # ambiente, compress_file num arquivo real de cada formato.
+    # Tools apontando para os binários EXTRAÍDOS de dentro do .exe (ver a
+    # nota acima: no onefile eles não existem como arquivo em dist/), PATH
+    # vazio no ambiente, compress_file num arquivo real de cada formato.
     # Prova que o empacotamento funciona — não que a máquina de build
     # tinha as ferramentas instaladas.
 
@@ -522,12 +541,18 @@ def test_caminho_longo_proximo_do_limite_do_windows(tmp_path)
     # Review Focus 2: erro claro em português, não OSError cru
 
 def test_executavel_abre_sem_crash()
-    # lança, espera, confirma processo vivo e stderr sem traceback, encerra
+    # lança, espera, confirma JANELA VISÍVEL com o título certo, encerra a
+    # árvore de processos e confere que não sobrou janela.
+    # "stderr sem traceback" não é observável: com --noconsole não há stderr,
+    # e um traceback de inicialização vai para caixa de diálogo. Exigir
+    # janela é mais forte — ela só existe se import, Tk, tkinterdnd2 e a
+    # construção inteira passaram.
 ```
 
-E o Review Focus 3, que é instrução, não código — verifique à mão uma vez e
-registre no relatório: em `onedir`, rodar o `.exe` de dentro do zip falha.
-Confirme a mensagem que aparece, porque ela precisa estar no README.
+~~E o Review Focus 3, que é instrução, não código — verifique à mão uma vez e
+registre no relatório: em `onedir`, rodar o `.exe` de dentro do zip falha.~~
+**Sem efeito com `onefile`:** não há pasta nem zip. Ver o Review Focus 3 lá
+em cima.
 
 - [ ] **Step 2: Rodar e confirmar que falham**
 
@@ -551,6 +576,14 @@ diagnósticos prováveis, do mais ao menos:
 
 Se um teste revelar algo fora dessas quatro hipóteses, reporte antes de
 corrigir — pode ser defeito de desenho.
+
+**Aconteceu, e o portão funcionou.** O Review Focus 2 apareceu como uma quinta
+causa, fora da lista: o destino cujo componente estoura o limite do NTFS saía
+como `OSError [WinError 123]` de dentro do `shutil.move`, **depois** de a
+compressão inteira ter rodado. Foi reportado antes de ser corrigido; a
+correção, aprovada em seguida, foi sondar o destino antes de codificar (criar
+e apagar um arquivo vazio, perguntando ao sistema em vez de calcular o limite)
+e manter uma rede de segurança nas duas escritas finais.
 
 - [ ] **Step 4: Rodar a suíte inteira**
 

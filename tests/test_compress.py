@@ -1421,3 +1421,194 @@ def test_o_mesmo_arquivo_rende_mais_com_alvo_relativo(tools, tmp_path):
     assert relativo.hit_target is True
     assert relativo.final_bytes <= src.stat().st_size // 2
     assert relativo.reduction_pct >= absoluto.reduction_pct + 20
+
+
+# ---------- destino impossível: Review Focus 2 ----------
+#
+# O gatilho não é o caminho chegar a 260 — é o COMPONENTE. Um nome de 252
+# caracteres é aceito como entrada e o destino, com `_comprimido`, passa dos
+# 255 que o NTFS permite por componente. Esse limite não depende da chave
+# `LongPathsEnabled` do registro, e é por isso que os testes daqui medem o
+# componente: nesta máquina a chave está ligada e caminhos de 591 caracteres
+# funcionam, então um teste "perto dos 260" passaria e esconderia o defeito.
+#
+# Antes do conserto isso saía como `OSError [WinError 123]` de dentro do
+# `shutil.move`, depois de a compressão inteira ter rodado.
+
+# Um a mais do que caberia: 255 - len("_comprimido") - len(".png") + 1.
+NOME_QUE_NAO_CABE = "a" * (255 - len("_comprimido") - len(".png") + 1)
+
+
+def _png_de_nome_quase_no_limite(tmp_path):
+    """Entrada aceitável cujo destino, com o sufixo, não é aceitável."""
+    src = tmp_path / f"{NOME_QUE_NAO_CABE}.png"
+    captura_de_tela(120, 90).save(src, "PNG", optimize=True)
+    assert len(src.name) <= 255, "a entrada tem de ser válida"
+    return src
+
+
+def test_sondagem_nao_deixa_rastro(tmp_path):
+    """O arquivo vazio da sondagem some antes de alguém ver."""
+    from gifc import compress as mod
+
+    alvo = tmp_path / "gato_comprimido.png"
+    mod._sondar_destino(alvo)
+    assert not alvo.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_sondagem_nao_apaga_arquivo_que_ja_existia(tmp_path):
+    """Sondar não é limpar: um arquivo de outra pessoa fica onde está.
+
+    `unique_output_path` normalmente devolve um caminho livre, mas entre ele e
+    a sondagem alguém pode criar o arquivo. Apagar o que não é nosso seria
+    perda de dado causada por uma verificação.
+    """
+    from gifc import compress as mod
+
+    alvo = tmp_path / "ja_existe.png"
+    alvo.write_bytes(b"conteudo de outra pessoa")
+    mod._sondar_destino(alvo)
+    assert alvo.read_bytes() == b"conteudo de outra pessoa"
+
+
+def test_sondagem_aceita_destino_valido(tmp_path):
+    from gifc import compress as mod
+
+    mod._sondar_destino(tmp_path / "ok.png")  # não levanta
+
+
+def test_nome_longo_da_erro_claro_em_portugues(tmp_path):
+    """Review Focus 2: o usuário tem de saber o que fazer.
+
+    Sem jargão: quem recebe a mensagem não sabe o que é componente de caminho,
+    e `WinError 123` não diz a ninguém que o problema é o nome.
+    """
+    from gifc import compress as mod
+
+    src = _png_de_nome_quase_no_limite(tmp_path)
+    with pytest.raises(mod.CompressError) as erro:
+        mod.compress_file(src, Alvo.relativo(50), Toggles(), Tools("ffmpeg", None, None))
+    msg = str(erro.value)
+    assert "limite do Windows" in msg
+    assert "mais curto" in msg
+    assert "WinError" not in msg and "Errno" not in msg, (
+        f"texto do sistema vazou para a interface: {msg}"
+    )
+
+
+def test_nome_longo_falha_antes_de_codificar(tmp_path, monkeypatch):
+    """E falha ANTES do trabalho, não depois.
+
+    Num GIF grande, descobrir no fim que o nome não cabe joga fora meio minuto
+    de codificação. A sondagem do destino vem antes do primeiro degrau.
+    """
+    from gifc import compress as mod
+    from gifc.formatos import png as formato_png
+
+    def proibido(*args, **kwargs):
+        raise AssertionError("codificou antes de saber que o destino não serve")
+
+    monkeypatch.setattr(formato_png, "codificar", proibido)
+    src = _png_de_nome_quase_no_limite(tmp_path)
+    with pytest.raises(mod.CompressError):
+        mod.compress_file(src, Alvo.relativo(50), Toggles(), Tools("ffmpeg", None, None))
+
+
+def test_sondagem_cobre_os_dois_destinos_possiveis_na_conversao(tmp_path, monkeypatch):
+    """Com "converter para WebP" a saída pode ser `.webp` OU `.png`.
+
+    Se a conversão não render, o original é copiado com a extensão da entrada
+    — então os dois caminhos têm de ser sondados, não só o da saída pedida.
+    """
+    from gifc import compress as mod
+
+    sondados = []
+    original = mod._sondar_destino
+    monkeypatch.setattr(
+        mod, "_sondar_destino", lambda p: (sondados.append(p.suffix), original(p))[1]
+    )
+    src = tmp_path / "gato.png"
+    captura_de_tela(120, 90).save(src, "PNG", optimize=True)
+    mod.compress_file(
+        src, Alvo.relativo(50), Toggles(), Tools("ffmpeg", None, None),
+        converter_webp=True,
+    )
+    assert set(sondados) == {".webp", ".png"}
+
+
+def test_sondagem_nao_mente_quando_o_problema_nao_e_o_nome(tmp_path):
+    """Pasta que não existe não é nome longo, e a mensagem não finge que é."""
+    from gifc import compress as mod
+
+    alvo = tmp_path / "pasta-que-nao-existe" / "x.png"
+    with pytest.raises(mod.CompressError) as erro:
+        mod._sondar_destino(alvo)
+    msg = str(erro.value)
+    assert "limite do Windows" not in msg
+    assert str(alvo.parent) in msg
+
+
+def test_rede_de_seguranca_na_escrita_do_vencedor(tmp_path, monkeypatch):
+    """Entre a sondagem e a escrita o mundo pode mudar.
+
+    A sondagem passou, então este caminho só dispara por corrida — mas quando
+    dispara, continua sendo `CompressError`, não `OSError` cru.
+    """
+    from gifc import compress as mod
+
+    def falha(*args, **kwargs):
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr(mod.shutil, "move", falha)
+    src = tmp_path / "gato.png"
+    captura_de_tela(400, 300).save(src, "PNG", optimize=True)
+    with pytest.raises(mod.CompressError) as erro:
+        mod.compress_file(src, Alvo.relativo(50), Toggles(), Tools("ffmpeg", None, None))
+    assert "Errno" not in str(erro.value)
+
+
+def test_rede_de_seguranca_na_copia_do_original(tmp_path, monkeypatch):
+    """O mesmo na outra escrita: a do `already_optimized`."""
+    mod, src, info, tools = _preparar(tmp_path, monkeypatch)
+
+    def encode_maior(s, d, params, i, t):
+        d.write_bytes(b"GIF89a" + b"z" * (info.size_bytes + 500))
+        return d.stat().st_size
+
+    def falha(*args, **kwargs):
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr(formato_gif, "codificar", encode_maior)
+    monkeypatch.setattr(mod.shutil, "copy2", falha)
+    with pytest.raises(mod.CompressError) as erro:
+        mod.compress_file(src, Alvo.absoluto(10_000), TODOS, tools)
+    assert "Errno" not in str(erro.value)
+
+
+def test_nome_longo_demais_nao_se_confunde_com_pasta_ausente(tmp_path):
+    """Os dois chegam como `ENOENT`; só o código do Windows os separa.
+
+    O Python mapeia `ERROR_FILENAME_EXCED_RANGE` (206) para `ENOENT`, que é
+    exatamente o errno de "a pasta não existe" (3). Decidir pelo errno manda
+    quem tem nome longo demais procurar uma pasta que está lá, e quem errou a
+    pasta renomear um arquivo que não tem nada de errado.
+    """
+    from gifc import compress as mod
+
+    nome_longo = OSError(0, "nome muito longo", None, 206)
+    pasta_ausente = OSError(0, "caminho não encontrado", None, 3)
+    assert nome_longo.errno == pasta_ausente.errno, "premissa do teste"
+
+    assert mod._e_erro_de_nome(nome_longo) is True
+    assert mod._e_erro_de_nome(pasta_ausente) is False
+    alvo = tmp_path / "x.png"
+    assert mod._mensagem_de_destino(alvo, nome_longo) == mod.MSG_NOME_LONGO
+    assert mod.MSG_NOME_LONGO != mod._mensagem_de_destino(alvo, pasta_ausente)
+
+
+def test_permissao_negada_nao_e_tratada_como_nome(tmp_path):
+    """`EACCES` é pasta protegida, não nome comprido."""
+    from gifc import compress as mod
+
+    assert mod._e_erro_de_nome(OSError(13, "acesso negado", None, 5)) is False
